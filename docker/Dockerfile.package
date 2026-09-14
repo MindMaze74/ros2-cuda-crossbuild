@@ -9,33 +9,49 @@ FROM ${BASE_IMAGE} AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES}
 ENV ROS_DISTRO=humble
+ENV MAKEFLAGS="-j2"
 
 WORKDIR /workspace/src
 
-# Клонирование репозитория
+# Клонирование целевого пакета
 RUN git clone --depth 1 --branch ${BRANCH} ${REPO_URL} ${PACKAGE_NAME}
 
-# Установка зависимостей
-RUN rosdep update && \
-    rosdep install --from-paths . --ignore-src -y --skip-keys="fastlio2"
+# Клонирование livox_ros_driver2 (зависимость FAST-LIO2)
+RUN git clone --depth 1 --branch humble \
+    https://github.com/Livox-SDK/livox_ros_driver2.git \
+    livox_ros_driver2 || true
 
-# Сборка через colcon
+# Установка зависимостей через rosdep
+RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    rosdep install --from-paths . --ignore-src -y --skip-keys=livox_ros_driver2 || true"
+
+# Сборка через colcon с CUDA
 WORKDIR /workspace
-RUN colcon build --packages-select ${PACKAGE_NAME} \
-    --cmake-args -DCMAKE_BUILD_TYPE=Release \
-                 -DCUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
-                 -DFASTLIO_USE_CUDA=ON \
-    --event-handlers console_direct+
+RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    colcon build \
+    --packages-select ${PACKAGE_NAME} \
+    --cmake-args \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
+        -DBUILD_TESTING=OFF \
+    --event-handlers console_direct+"
 
-# Итоговый образ с минимальным набором
+# Проверка CUDA
+RUN nvcc --version
+
+# Финальный образ
 FROM ${BASE_IMAGE}
 
 ENV ROS_DISTRO=humble
-WORKDIR /opt/ros/${ROS_DISTRO}
+WORKDIR /opt/ros_ws
 
 COPY --from=builder /workspace/install /workspace/install
 
+RUN /bin/bash -c "echo 'source /opt/ros/${ROS_DISTRO}/setup.bash' >> /etc/bash.bashrc && \
+    echo 'source /workspace/install/setup.bash' >> /etc/bash.bashrc"
+
 ENV PATH="/workspace/install/bin:/opt/ros/${ROS_DISTRO}/bin:${PATH}" \
-    LD_LIBRARY_PATH="/workspace/install/lib:/opt/ros/${ROS_DISTRO}/lib:${LD_LIBRARY_PATH}"
+    LD_LIBRARY_PATH="/workspace/install/lib:/opt/ros/${ROS_DISTRO}/lib:${LD_LIBRARY_PATH}" \
+    AMENT_PREFIX_PATH="/workspace/install:/opt/ros/${ROS_DISTRO}:${AMENT_PREFIX_PATH}"
 
 CMD ["/bin/bash"]

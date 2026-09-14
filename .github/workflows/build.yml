@@ -1,0 +1,166 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+
+  # ─── Этап 1: Сборка базовых образов ───
+  build-base:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x86
+            dockerfile: docker/Dockerfile.base.x86
+            target_platform: linux/amd64
+          - platform: agx
+            dockerfile: docker/Dockerfile.base.agx
+            target_platform: linux/arm64
+          - platform: nano
+            dockerfile: docker/Dockerfile.base.nano
+            target_platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Lowercase repo name
+        id: repo
+        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Build and push base image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.target_platform }}
+          push: true
+          provenance: false
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─── Этап 2: Сборка пакетов ───
+  build-packages:
+    needs: build-base
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [fastlio2]
+        include:
+          - platform: x86
+            target_platform: linux/amd64
+            cuda_arch: "86"
+          - platform: agx
+            target_platform: linux/arm64
+            cuda_arch: "87"
+          - platform: nano
+            target_platform: linux/arm64
+            cuda_arch: "87"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Lowercase repo name
+        id: repo
+        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Build and push package image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.package
+          platforms: ${{ matrix.target_platform }}
+          push: true
+          provenance: false
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
+            CUDA_ARCHITECTURES=${{ matrix.cuda_arch }}
+            REPO_URL=https://github.com/Ericsii/FAST_LIO_ROS2.git
+            BRANCH=main
+            PACKAGE_NAME=fast_lio
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─── Этап 3: Тестирование ───
+  test-images:
+    needs: build-packages
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x86, agx, nano]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Lowercase repo name
+        id: repo
+        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Pull and test image
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-fastlio2:${{ matrix.platform }}"
+          echo "Testing image: $IMAGE"
+          docker pull "$IMAGE"
+
+          echo "=== 1. CUDA version ==="
+          docker run --rm "$IMAGE" nvcc --version
+
+          echo "=== 2. ROS2 distro ==="
+          docker run --rm "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && echo ROS_DISTRO=\$ROS_DISTRO"
+
+          echo "=== 3. Installed packages ==="
+          docker run --rm "$IMAGE" ls -la /workspace/install/
+
+          echo "=== 4. ROS2 package list ==="
+          docker run --rm "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && source /workspace/install/setup.bash && ros2 pkg list" || true
+
+          echo "=== 5. CUDA library check ==="
+          docker run --rm "$IMAGE" bash -c "ldconfig -p | grep -i cuda | head -5" || true
+
+          echo "All tests passed for $IMAGE"

@@ -1,24 +1,47 @@
+# dustynv/ros — community-образ для Jetson с ROS2 Humble + CUDA 12.6
+# Совместим с L4T R36.4.0 / R36.5.0 (JetPack 6.x)
 FROM dustynv/ros:humble-desktop-l4t-r36.4.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=humble
 ENV CUDA_ARCHITECTURES="87"
 
-RUN dpkg-divert --add --rename --divert /sbin/ldconfig.real /sbin/ldconfig \
-    && printf '#!/bin/sh\nexit 0\n' > /sbin/ldconfig \
-    && chmod +x /sbin/ldconfig
+# Фикс ldconfig для QEMU кросс-компиляции
+RUN if [ -f /sbin/ldconfig ] && [ ! -f /sbin/ldconfig.real ]; then \
+        cp /sbin/ldconfig /sbin/ldconfig.real; \
+    fi && \
+    printf '#!/bin/sh\nexit 0\n' > /sbin/ldconfig && \
+    chmod +x /sbin/ldconfig
 
+# Системные зависимости
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    curl \
+    wget \
+    git \
     build-essential \
     cmake \
     pkg-config \
-    git \
-    wget \
-    python3-colcon-common-extensions \
-    python3-rosdep \
+    && rm -rf /var/lib/apt/lists/*
+
+# PCL, Eigen
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libpcl-dev \
     libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Livox-SDK2
+RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 \
+    && cd /tmp/Livox-SDK2 \
+    && mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && make -j2 \
+    && make install \
+    && rm -rf /tmp/Livox-SDK2
+
+RUN rosdep init || true && rosdep update
+
 WORKDIR /workspace
 ENV PATH="/opt/ros/${ROS_DISTRO}/bin:${PATH}"
+
+CMD ["/bin/bash"]

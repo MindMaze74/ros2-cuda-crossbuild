@@ -2,4 +2,16 @@ name: fastlio2
 repo: https://github.com/Ericsii/FAST_LIO_ROS2.git
 branch: main
 ros_distro: humble
-cuda_arch: "87"  # для Orin; для x86 можно переопределить в CI
+cuda_arch:
+  x86: "86"
+  agx: "87"
+  nano: "87"
+description: "FAST-LIO2 — LiDAR-Inertial Odometry (ROS2 port by Ericsii)"
+dependencies:
+  - livox-SDK2
+  - livox_ros_driver2
+  - pcl
+  - eigen3
+cmake_args:
+  - "-DCMAKE_BUILD_TYPE=Release"
+  - "-DBUILD_TESTING=OFF"
