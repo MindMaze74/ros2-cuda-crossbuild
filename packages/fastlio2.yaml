@@ -1,0 +1,5 @@
+name: fastlio2
+repo: https://github.com/Ericsii/FAST_LIO_ROS2.git
+branch: main
+ros_distro: humble
+cuda_arch: "87"  # для Orin; для x86 можно переопределить в CI

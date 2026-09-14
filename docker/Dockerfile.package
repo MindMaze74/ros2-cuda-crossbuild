@@ -1,0 +1,41 @@
+ARG BASE_IMAGE
+ARG CUDA_ARCHITECTURES
+ARG REPO_URL
+ARG BRANCH
+ARG PACKAGE_NAME
+
+FROM ${BASE_IMAGE} AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES}
+ENV ROS_DISTRO=humble
+
+WORKDIR /workspace/src
+
+# Клонирование репозитория
+RUN git clone --depth 1 --branch ${BRANCH} ${REPO_URL} ${PACKAGE_NAME}
+
+# Установка зависимостей
+RUN rosdep update && \
+    rosdep install --from-paths . --ignore-src -y --skip-keys="fastlio2"
+
+# Сборка через colcon
+WORKDIR /workspace
+RUN colcon build --packages-select ${PACKAGE_NAME} \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release \
+                 -DCUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
+                 -DFASTLIO_USE_CUDA=ON \
+    --event-handlers console_direct+
+
+# Итоговый образ с минимальным набором
+FROM ${BASE_IMAGE}
+
+ENV ROS_DISTRO=humble
+WORKDIR /opt/ros/${ROS_DISTRO}
+
+COPY --from=builder /workspace/install /workspace/install
+
+ENV PATH="/workspace/install/bin:/opt/ros/${ROS_DISTRO}/bin:${PATH}" \
+    LD_LIBRARY_PATH="/workspace/install/lib:/opt/ros/${ROS_DISTRO}/lib:${LD_LIBRARY_PATH}"
+
+CMD ["/bin/bash"]

@@ -1,0 +1,9 @@
+.git
+.github
+.gitignore
+.dockerignore
+*.md
+docs/
+scripts/
+packages/
+!docker/

@@ -1,0 +1,12 @@
+*.log
+*.swp
+*.swo
+.DS_Store
+docker-compose.override.yml
+.env
+build/
+dist/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
