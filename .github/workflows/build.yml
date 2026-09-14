@@ -13,7 +13,6 @@ env:
 
 jobs:
 
-  # ─── Этап 1: Сборка базовых образов ───
   build-base:
     runs-on: ubuntu-latest
     strategy:
@@ -57,12 +56,12 @@ jobs:
           platforms: ${{ matrix.target_platform }}
           push: true
           provenance: false
+          no-cache: true
           tags: |
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache,mode=max
 
-  # ─── Этап 2: Сборка пакетов ───
   build-packages:
     needs: build-base
     runs-on: ubuntu-latest
@@ -108,6 +107,7 @@ jobs:
           platforms: ${{ matrix.target_platform }}
           push: true
           provenance: false
+          no-cache: true
           tags: |
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}
           build-args: |
@@ -119,7 +119,6 @@ jobs:
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache,mode=max
 
-  # ─── Этап 3: Тестирование ───
   test-images:
     needs: build-packages
     runs-on: ubuntu-latest

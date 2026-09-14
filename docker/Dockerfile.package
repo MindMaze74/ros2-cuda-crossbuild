@@ -1,17 +1,13 @@
 # syntax=docker/dockerfile:1.7
 
-# Глобальные ARG — доступны только в FROM
 ARG BASE_IMAGE
 ARG CUDA_ARCHITECTURES
 ARG REPO_URL
 ARG BRANCH
 ARG PACKAGE_NAME
 
-# ─── Стадия сборки ───
 FROM ${BASE_IMAGE} AS builder
 
-# Повторно объявляем ARG внутри стадии
-ARG BASE_IMAGE
 ARG CUDA_ARCHITECTURES
 ARG REPO_URL
 ARG BRANCH
@@ -22,74 +18,46 @@ ENV CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES}
 ENV ROS_DISTRO=humble
 ENV MAKEFLAGS="-j2"
 
-# Фикс пути к ROS2 setup.bash (dustynv ставит в /install/, стандарт — в корне)
-RUN ROS_SETUP="" && \
-    if [ -f /opt/ros/${ROS_DISTRO}/setup.bash ]; then \
-        ROS_SETUP=/opt/ros/${ROS_DISTRO}/setup.bash; \
-    elif [ -f /opt/ros/${ROS_DISTRO}/install/setup.bash ]; then \
-        ln -sf /opt/ros/${ROS_DISTRO}/install/setup.bash /opt/ros/${ROS_DISTRO}/setup.bash; \
-        ROS_SETUP=/opt/ros/${ROS_DISTRO}/setup.bash; \
-    else \
-        echo "ERROR: cannot find ROS2 setup.bash"; \
-        echo "Contents of /opt/ros/${ROS_DISTRO}/:"; \
-        ls -laR /opt/ros/${ROS_DISTRO}/ 2>/dev/null | head -50; \
-        exit 1; \
-    fi && \
-    echo "ROS2 setup: $ROS_SETUP" && \
-    source $ROS_SETUP && \
-    echo "ROS_DISTRO=$ROS_DISTRO"
-
 WORKDIR /workspace/src
 
 # Клонирование целевого пакета
 RUN git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${PACKAGE_NAME}"
 
-# Клонирование livox_ros_driver2 (зависимость FAST-LIO2)
-RUN git clone --depth 1 --branch humble \
-    https://github.com/Livox-SDK/livox_ros_driver2.git \
+# Клонирование livox_ros_driver2 (ветка master — не humble!)
+RUN git clone --depth 1 https://github.com/Livox-SDK/livox_ros_driver2.git \
     livox_ros_driver2 || true
 
 # Установка зависимостей через rosdep
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
-    rosdep install --from-paths . --ignore-src -y --skip-keys=livox_ros_driver2 || true"
+    source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    rosdep install --from-paths . --ignore-src -y --skip-keys=livox_ros_driver2 || true
 
-# Сборка через colcon с CUDA
+# Сборка
 WORKDIR /workspace
 RUN --mount=type=cache,target=/workspace/build \
     --mount=type=cache,target=/workspace/install \
-    /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    source /opt/ros/${ROS_DISTRO}/setup.bash && \
     colcon build \
     --packages-select ${PACKAGE_NAME} \
     --cmake-args \
         -DCMAKE_BUILD_TYPE=Release \
         -DFASTLIO_USE_CUDA=ON \
         -DCUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
-        -DBUILD_TESTING=OFF \
-    --event-handlers console_direct+"
+        -DBUILD_TESTING=OFF
 
-# Проверка CUDA
 RUN nvcc --version
 
-# ─── Финальный образ ───
-ARG BASE_IMAGE
+# Финальный образ
 FROM ${BASE_IMAGE}
-
-ARG PACKAGE_NAME
 
 ENV ROS_DISTRO=humble
 WORKDIR /opt/ros_ws
 
 COPY --from=builder /workspace/install /workspace/install
 
-# Фикс пути к ROS2 setup.bash в финальном образе
-RUN if [ ! -f /opt/ros/${ROS_DISTRO}/setup.bash ] && [ -f /opt/ros/${ROS_DISTRO}/install/setup.bash ]; then \
-        ln -sf /opt/ros/${ROS_DISTRO}/install/setup.bash /opt/ros/${ROS_DISTRO}/setup.bash; \
-    fi
-
-RUN /bin/bash -c "echo 'source /opt/ros/${ROS_DISTRO}/setup.bash' >> /etc/bash.bashrc && \
-    echo 'source /workspace/install/setup.bash' >> /etc/bash.bashrc"
+RUN echo 'source /opt/ros/${ROS_DISTRO}/setup.bash' >> /etc/bash.bashrc && \
+    echo 'source /workspace/install/setup.bash' >> /etc/bash.bashrc
 
 ENV PATH="/workspace/install/bin:/opt/ros/${ROS_DISTRO}/bin:${PATH}" \
     LD_LIBRARY_PATH="/workspace/install/lib:/opt/ros/${ROS_DISTRO}/lib:${LD_LIBRARY_PATH}"
