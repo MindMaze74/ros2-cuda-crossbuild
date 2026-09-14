@@ -1,21 +1,27 @@
+# syntax=docker/dockerfile:1.7
 FROM nvidia/cuda:12.6.3-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=humble
 ENV CUDA_ARCHITECTURES="86"
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    software-properties-common \
-    curl \
-    wget \
-    git \
-    build-essential \
-    cmake \
-    pkg-config \
+# Системные зависимости
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common \
+        curl \
+        wget \
+        git \
+        build-essential \
+        cmake \
+        pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 # ROS2 Humble
-RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
     | gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
        > /etc/apt/sources.list.d/ros2.list \
@@ -28,13 +34,16 @@ RUN curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
     && rm -rf /var/lib/apt/lists/*
 
 # PCL, Eigen
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpcl-dev \
-    libeigen3-dev \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        libpcl-dev \
+        libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Livox-SDK2
-RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 \
+RUN --mount=type=cache,target=/tmp/livox-build \
+    git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 \
     && cd /tmp/Livox-SDK2 \
     && mkdir build && cd build \
     && cmake .. -DCMAKE_BUILD_TYPE=Release \

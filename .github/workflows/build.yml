@@ -8,6 +8,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  DOCKER_BUILDKIT: 1
+  BUILDKIT_PROGRESS: plain
 
 jobs:
 
@@ -57,8 +59,8 @@ jobs:
           provenance: false
           tags: |
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache,mode=max
 
   # ─── Этап 2: Сборка пакетов ───
   build-packages:
@@ -114,9 +116,8 @@ jobs:
             REPO_URL=https://github.com/ruiqichao/FAST_LIO2_GPU.git
             BRANCH=main
             PACKAGE_NAME=fast_lio
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache,mode=max
 
   # ─── Этап 3: Тестирование ───
   test-images:

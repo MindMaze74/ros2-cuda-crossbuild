@@ -1,20 +1,37 @@
+# syntax=docker/dockerfile:1.7
+
+# Глобальные ARG — доступны только в FROM
 ARG BASE_IMAGE
 ARG CUDA_ARCHITECTURES
 ARG REPO_URL
 ARG BRANCH
 ARG PACKAGE_NAME
 
+# ─── Стадия сборки ───
 FROM ${BASE_IMAGE} AS builder
+
+# Повторно объявляем ARG внутри стадии — без этого они пустые!
+ARG BASE_IMAGE
+ARG CUDA_ARCHITECTURES
+ARG REPO_URL
+ARG BRANCH
+ARG PACKAGE_NAME
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES}
 ENV ROS_DISTRO=humble
 ENV MAKEFLAGS="-j2"
 
+# Проверка, что все обязательные аргументы переданы
+RUN if [ -z "${BASE_IMAGE}" ] || [ -z "${REPO_URL}" ] || [ -z "${BRANCH}" ] || [ -z "${PACKAGE_NAME}" ]; then \
+        echo "ERROR: missing required build-args (BASE_IMAGE, REPO_URL, BRANCH, PACKAGE_NAME)"; \
+        exit 1; \
+    fi
+
 WORKDIR /workspace/src
 
 # Клонирование целевого пакета
-RUN git clone --depth 1 --branch ${BRANCH} ${REPO_URL} ${PACKAGE_NAME}
+RUN git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${PACKAGE_NAME}"
 
 # Клонирование livox_ros_driver2 (зависимость FAST-LIO2)
 RUN git clone --depth 1 --branch humble \
@@ -22,12 +39,16 @@ RUN git clone --depth 1 --branch humble \
     livox_ros_driver2 || true
 
 # Установка зависимостей через rosdep
-RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     rosdep install --from-paths . --ignore-src -y --skip-keys=livox_ros_driver2 || true"
 
 # Сборка через colcon с CUDA
 WORKDIR /workspace
-RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+RUN --mount=type=cache,target=/workspace/build \
+    --mount=type=cache,target=/workspace/install \
+    /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     colcon build \
     --packages-select ${PACKAGE_NAME} \
     --cmake-args \
@@ -37,20 +58,14 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
         -DBUILD_TESTING=OFF \
     --event-handlers console_direct+"
 
-# Проверка что CUDA реально использовалась при сборке
-RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
-    source /workspace/install/setup.bash && \
-    echo '=== CUDA check ===' && \
-    nvcc --version && \
-    echo '=== ROS2 check ===' && \
-    ros2 pkg list | grep ${PACKAGE_NAME} && \
-    echo '=== Build artifacts ===' && \
-    ls -la /workspace/install/ && \
-    echo '=== CUDA libs in build ===' && \
-    find /workspace/install -name '*.so' -exec ldd {} \; 2>/dev/null | grep -i cuda | head -10 || true"
+# Проверка CUDA
+RUN nvcc --version
 
-# Финальный образ
+# ─── Финальный образ ───
+ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
+
+ARG PACKAGE_NAME
 
 ENV ROS_DISTRO=humble
 WORKDIR /opt/ros_ws
@@ -61,7 +76,6 @@ RUN /bin/bash -c "echo 'source /opt/ros/${ROS_DISTRO}/setup.bash' >> /etc/bash.b
     echo 'source /workspace/install/setup.bash' >> /etc/bash.bashrc"
 
 ENV PATH="/workspace/install/bin:/opt/ros/${ROS_DISTRO}/bin:${PATH}" \
-    LD_LIBRARY_PATH="/workspace/install/lib:/opt/ros/${ROS_DISTRO}/lib:${LD_LIBRARY_PATH}" \
-    AMENT_PREFIX_PATH="/workspace/install:/opt/ros/${ROS_DISTRO}:${AMENT_PREFIX_PATH}"
+    LD_LIBRARY_PATH="/workspace/install/lib:/opt/ros/${ROS_DISTRO}/lib:${LD_LIBRARY_PATH}"
 
 CMD ["/bin/bash"]

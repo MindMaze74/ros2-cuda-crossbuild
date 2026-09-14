@@ -6,4 +6,16 @@
 docs/
 scripts/
 packages/
-!docker/
+*.log
+*.swp
+*.swo
+.DS_Store
+build/
+dist/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+.env
+docker-compose*.yml
+node_modules/

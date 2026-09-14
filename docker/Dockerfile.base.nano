@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM dustynv/ros:humble-desktop-l4t-r36.4.0
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -11,8 +12,10 @@ RUN if [ -f /sbin/ldconfig ] && [ ! -f /sbin/ldconfig.real ]; then \
     printf '#!/bin/sh\nexit 0\n' > /sbin/ldconfig && \
     chmod +x /sbin/ldconfig
 
-# Обновление истёкшего GPG-ключа ROS2 + установка системных зависимостей
-RUN apt-get update 2>/dev/null || true \
+# Обновление истёкшего GPG-ключа ROS2 + системные зависимости
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update 2>/dev/null || true \
     && apt-get install -y --no-install-recommends wget gnupg2 || true \
     && rm -f /usr/share/keyrings/ros-archive-keyring.gpg \
     && rm -f /etc/apt/trusted.gpg.d/ros*.gpg \
@@ -33,13 +36,16 @@ RUN apt-get update 2>/dev/null || true \
     && rm -rf /var/lib/apt/lists/*
 
 # PCL, Eigen
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpcl-dev \
-    libeigen3-dev \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        libpcl-dev \
+        libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Livox-SDK2
-RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 \
+RUN --mount=type=cache,target=/tmp/livox-build \
+    git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 \
     && cd /tmp/Livox-SDK2 \
     && mkdir build && cd build \
     && cmake .. -DCMAKE_BUILD_TYPE=Release \
