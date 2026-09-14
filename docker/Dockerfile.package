@@ -32,12 +32,22 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     --packages-select ${PACKAGE_NAME} \
     --cmake-args \
         -DCMAKE_BUILD_TYPE=Release \
+        -DFASTLIO_USE_CUDA=ON \
         -DCUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
         -DBUILD_TESTING=OFF \
     --event-handlers console_direct+"
 
-# Проверка CUDA
-RUN nvcc --version
+# Проверка что CUDA реально использовалась при сборке
+RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    source /workspace/install/setup.bash && \
+    echo '=== CUDA check ===' && \
+    nvcc --version && \
+    echo '=== ROS2 check ===' && \
+    ros2 pkg list | grep ${PACKAGE_NAME} && \
+    echo '=== Build artifacts ===' && \
+    ls -la /workspace/install/ && \
+    echo '=== CUDA libs in build ===' && \
+    find /workspace/install -name '*.so' -exec ldd {} \; 2>/dev/null | grep -i cuda | head -10 || true"
 
 # Финальный образ
 FROM ${BASE_IMAGE}

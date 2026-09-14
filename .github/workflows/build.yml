@@ -111,11 +111,12 @@ jobs:
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
             CUDA_ARCHITECTURES=${{ matrix.cuda_arch }}
-            REPO_URL=https://github.com/Ericsii/FAST_LIO_ROS2.git
+            REPO_URL=https://github.com/ruiqichao/FAST_LIO2_GPU.git
             BRANCH=main
             PACKAGE_NAME=fast_lio
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
 
   # ─── Этап 3: Тестирование ───
   test-images:
