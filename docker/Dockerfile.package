@@ -23,15 +23,16 @@ WORKDIR /workspace/src
 # Клонирование целевого пакета
 RUN git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${PACKAGE_NAME}"
 
-# Клонирование livox_ros_driver2 (ветка master — не humble!)
+# Клонирование livox_ros_driver2
 RUN git clone --depth 1 https://github.com/Livox-SDK/livox_ros_driver2.git \
     livox_ros_driver2 || true
 
-# Установка зависимостей через rosdep
+# Установка зависимостей через rosdep (pcl_ros уже установлен в базовом образе)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     source /opt/ros/${ROS_DISTRO}/setup.bash && \
-    rosdep install --from-paths . --ignore-src -y --skip-keys=livox_ros_driver2 || true
+    rosdep install --from-paths . --ignore-src -y \
+      --skip-keys=livox_ros_driver2,pcl_ros || true
 
 # Сборка
 WORKDIR /workspace
@@ -39,8 +40,8 @@ RUN --mount=type=cache,target=/workspace/build \
     --mount=type=cache,target=/workspace/install \
     source /opt/ros/${ROS_DISTRO}/setup.bash && \
     colcon build \
-    --packages-select ${PACKAGE_NAME} \
-    --cmake-args \
+      --packages-select ${PACKAGE_NAME} \
+      --cmake-args \
         -DCMAKE_BUILD_TYPE=Release \
         -DFASTLIO_USE_CUDA=ON \
         -DCUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
@@ -50,16 +51,11 @@ RUN nvcc --version
 
 # Финальный образ
 FROM ${BASE_IMAGE}
-
 ENV ROS_DISTRO=humble
 WORKDIR /opt/ros_ws
-
 COPY --from=builder /workspace/install /workspace/install
-
 RUN echo 'source /opt/ros/${ROS_DISTRO}/setup.bash' >> /etc/bash.bashrc && \
     echo 'source /workspace/install/setup.bash' >> /etc/bash.bashrc
-
 ENV PATH="/workspace/install/bin:/opt/ros/${ROS_DISTRO}/bin:${PATH}" \
     LD_LIBRARY_PATH="/workspace/install/lib:/opt/ros/${ROS_DISTRO}/lib:${LD_LIBRARY_PATH}"
-
 CMD ["/bin/bash"]

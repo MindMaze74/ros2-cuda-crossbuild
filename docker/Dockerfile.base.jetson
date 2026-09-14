@@ -10,18 +10,30 @@ RUN dpkg-divert --add --rename --divert /sbin/ldconfig.real /sbin/ldconfig \
     && echo '#!/bin/sh\nexit 0' > /sbin/ldconfig \
     && chmod +x /sbin/ldconfig
 
-# Доп. зависимости для сборки ROS-пакетов
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    pkg-config \
-    git \
-    wget \
-    python3-colcon-common-extensions \
-    python3-rosdep \
-    libpcl-dev \
-    libeigen3-dev \
+# Добавляем репозиторий ROS2 и устанавливаем зависимости
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update 2>/dev/null || true \
+    && apt-get install -y --no-install-recommends wget gnupg2 software-properties-common || true \
+    && rm -f /usr/share/keyrings/ros-archive-keyring.gpg \
+    && rm -f /etc/apt/trusted.gpg.d/ros*.gpg \
+    && apt-key del F42ED6FBAB17C654 2>/dev/null || true \
+    && wget -qO- https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+       | gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+       http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+       > /etc/apt/sources.list.d/ros2.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+       ros-${ROS_DISTRO}-ros-base \
+       ros-${ROS_DISTRO}-pcl-ros \
+       ros-${ROS_DISTRO}-pcl-conversions \
+       python3-colcon-common-extensions \
+       python3-rosdep \
+       python3-vcstool \
+       libpcl-dev libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
 ENV PATH="/opt/ros/${ROS_DISTRO}/bin:${PATH}"
+CMD ["/bin/bash"]
