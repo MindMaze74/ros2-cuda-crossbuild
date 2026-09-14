@@ -1,27 +1,35 @@
-# dustynv/ros — community-образ для Jetson с ROS2 Humble + CUDA 12.6
-# Совместим с L4T R36.4.0 / R36.5.0 (JetPack 6.x)
 FROM dustynv/ros:humble-desktop-l4t-r36.4.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=humble
 ENV CUDA_ARCHITECTURES="87"
 
-# Фикс ldconfig для QEMU кросс-компиляции
+# Фикс ldconfig для QEMU
 RUN if [ -f /sbin/ldconfig ] && [ ! -f /sbin/ldconfig.real ]; then \
         cp /sbin/ldconfig /sbin/ldconfig.real; \
     fi && \
     printf '#!/bin/sh\nexit 0\n' > /sbin/ldconfig && \
     chmod +x /sbin/ldconfig
 
-# Системные зависимости
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    software-properties-common \
-    curl \
-    wget \
-    git \
-    build-essential \
-    cmake \
-    pkg-config \
+# Обновление истёкшего GPG-ключа ROS2 + установка системных зависимостей
+RUN apt-get update 2>/dev/null || true \
+    && apt-get install -y --no-install-recommends wget gnupg2 || true \
+    && rm -f /usr/share/keyrings/ros-archive-keyring.gpg \
+    && rm -f /etc/apt/trusted.gpg.d/ros*.gpg \
+    && apt-key del F42ED6FBAB17C654 2>/dev/null || true \
+    && wget -qO- https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+       | gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+       > /etc/apt/sources.list.d/ros2.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        software-properties-common \
+        curl \
+        wget \
+        git \
+        build-essential \
+        cmake \
+        pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 # PCL, Eigen
