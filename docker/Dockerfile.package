@@ -22,18 +22,22 @@ ENV CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES}
 ENV ROS_DISTRO=humble
 ENV MAKEFLAGS="-j2"
 
-# Проверка обязательных аргументов + фикс пути к ROS2 setup.bash
-RUN if [ -z "${BASE_IMAGE}" ] || [ -z "${REPO_URL}" ] || [ -z "${BRANCH}" ] || [ -z "${PACKAGE_NAME}" ]; then \
-        echo "ERROR: missing required build-args"; exit 1; \
-    fi && \
-    if [ -f /opt/ros/${ROS_DISTRO}/install/setup.bash ] && [ ! -f /opt/ros/${ROS_DISTRO}/setup.bash ]; then \
-        ln -s /opt/ros/${ROS_DISTRO}/install/setup.bash /opt/ros/${ROS_DISTRO}/setup.bash; \
-    fi && \
-    if [ ! -f /opt/ros/${ROS_DISTRO}/setup.bash ]; then \
-        echo "ERROR: /opt/ros/${ROS_DISTRO}/setup.bash not found"; \
-        ls -la /opt/ros/${ROS_DISTRO}/ 2>/dev/null || echo "No /opt/ros/${ROS_DISTRO}/ directory"; \
+# Фикс пути к ROS2 setup.bash (dustynv ставит в /install/, стандарт — в корне)
+RUN ROS_SETUP="" && \
+    if [ -f /opt/ros/${ROS_DISTRO}/setup.bash ]; then \
+        ROS_SETUP=/opt/ros/${ROS_DISTRO}/setup.bash; \
+    elif [ -f /opt/ros/${ROS_DISTRO}/install/setup.bash ]; then \
+        ln -sf /opt/ros/${ROS_DISTRO}/install/setup.bash /opt/ros/${ROS_DISTRO}/setup.bash; \
+        ROS_SETUP=/opt/ros/${ROS_DISTRO}/setup.bash; \
+    else \
+        echo "ERROR: cannot find ROS2 setup.bash"; \
+        echo "Contents of /opt/ros/${ROS_DISTRO}/:"; \
+        ls -laR /opt/ros/${ROS_DISTRO}/ 2>/dev/null | head -50; \
         exit 1; \
-    fi
+    fi && \
+    echo "ROS2 setup: $ROS_SETUP" && \
+    source $ROS_SETUP && \
+    echo "ROS_DISTRO=$ROS_DISTRO"
 
 WORKDIR /workspace/src
 
@@ -80,8 +84,8 @@ WORKDIR /opt/ros_ws
 COPY --from=builder /workspace/install /workspace/install
 
 # Фикс пути к ROS2 setup.bash в финальном образе
-RUN if [ -f /opt/ros/${ROS_DISTRO}/install/setup.bash ] && [ ! -f /opt/ros/${ROS_DISTRO}/setup.bash ]; then \
-        ln -s /opt/ros/${ROS_DISTRO}/install/setup.bash /opt/ros/${ROS_DISTRO}/setup.bash; \
+RUN if [ ! -f /opt/ros/${ROS_DISTRO}/setup.bash ] && [ -f /opt/ros/${ROS_DISTRO}/install/setup.bash ]; then \
+        ln -sf /opt/ros/${ROS_DISTRO}/install/setup.bash /opt/ros/${ROS_DISTRO}/setup.bash; \
     fi
 
 RUN /bin/bash -c "echo 'source /opt/ros/${ROS_DISTRO}/setup.bash' >> /etc/bash.bashrc && \
