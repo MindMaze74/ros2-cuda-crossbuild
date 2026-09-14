@@ -10,7 +10,7 @@ ARG PACKAGE_NAME
 # ─── Стадия сборки ───
 FROM ${BASE_IMAGE} AS builder
 
-# Повторно объявляем ARG внутри стадии — без этого они пустые!
+# Повторно объявляем ARG внутри стадии
 ARG BASE_IMAGE
 ARG CUDA_ARCHITECTURES
 ARG REPO_URL
@@ -22,9 +22,16 @@ ENV CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES}
 ENV ROS_DISTRO=humble
 ENV MAKEFLAGS="-j2"
 
-# Проверка, что все обязательные аргументы переданы
+# Проверка обязательных аргументов + фикс пути к ROS2 setup.bash
 RUN if [ -z "${BASE_IMAGE}" ] || [ -z "${REPO_URL}" ] || [ -z "${BRANCH}" ] || [ -z "${PACKAGE_NAME}" ]; then \
-        echo "ERROR: missing required build-args (BASE_IMAGE, REPO_URL, BRANCH, PACKAGE_NAME)"; \
+        echo "ERROR: missing required build-args"; exit 1; \
+    fi && \
+    if [ -f /opt/ros/${ROS_DISTRO}/install/setup.bash ] && [ ! -f /opt/ros/${ROS_DISTRO}/setup.bash ]; then \
+        ln -s /opt/ros/${ROS_DISTRO}/install/setup.bash /opt/ros/${ROS_DISTRO}/setup.bash; \
+    fi && \
+    if [ ! -f /opt/ros/${ROS_DISTRO}/setup.bash ]; then \
+        echo "ERROR: /opt/ros/${ROS_DISTRO}/setup.bash not found"; \
+        ls -la /opt/ros/${ROS_DISTRO}/ 2>/dev/null || echo "No /opt/ros/${ROS_DISTRO}/ directory"; \
         exit 1; \
     fi
 
@@ -71,6 +78,11 @@ ENV ROS_DISTRO=humble
 WORKDIR /opt/ros_ws
 
 COPY --from=builder /workspace/install /workspace/install
+
+# Фикс пути к ROS2 setup.bash в финальном образе
+RUN if [ -f /opt/ros/${ROS_DISTRO}/install/setup.bash ] && [ ! -f /opt/ros/${ROS_DISTRO}/setup.bash ]; then \
+        ln -s /opt/ros/${ROS_DISTRO}/install/setup.bash /opt/ros/${ROS_DISTRO}/setup.bash; \
+    fi
 
 RUN /bin/bash -c "echo 'source /opt/ros/${ROS_DISTRO}/setup.bash' >> /etc/bash.bashrc && \
     echo 'source /workspace/install/setup.bash' >> /etc/bash.bashrc"

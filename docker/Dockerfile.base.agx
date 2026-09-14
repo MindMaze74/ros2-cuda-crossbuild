@@ -12,6 +12,11 @@ RUN if [ -f /sbin/ldconfig ] && [ ! -f /sbin/ldconfig.real ]; then \
     printf '#!/bin/sh\nexit 0\n' > /sbin/ldconfig && \
     chmod +x /sbin/ldconfig
 
+# Фикс пути к ROS2 setup.bash (dustynv собирает из исходников — setup в /install/)
+RUN if [ -f /opt/ros/${ROS_DISTRO}/install/setup.bash ] && [ ! -f /opt/ros/${ROS_DISTRO}/setup.bash ]; then \
+        ln -s /opt/ros/${ROS_DISTRO}/install/setup.bash /opt/ros/${ROS_DISTRO}/setup.bash; \
+    fi
+
 # Обновление истёкшего GPG-ключа ROS2 + системные зависимости
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
