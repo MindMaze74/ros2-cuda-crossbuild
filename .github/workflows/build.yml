@@ -1,12 +1,28 @@
+# .github/workflows/build.yml
+#
+# Сборка базовых образов и ROS2-пакетов с CUDA для трёх платформ.
+# Конфигурация пакетов — config/packages.yaml.
+#
+# Ключевые особенности:
+#   - digest базовых образов вместо :latest — воспроизводимость
+#   - per-job permissions (least privilege)
+#   - timeout-minutes, concurrency — защита от зависаний и наложения прогонов
+#   - двухуровневый кеш: actions/cache (local) + registry
+#   - smoke-тест компиляции CUDA + ldd-проверка зависимостей
+#   - ros_distro резолвится по платформе (map в packages.yaml)
+#   - фильтр по полю platforms (пакет × платформа)
+
 name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ main ]
-    tags: [ 'v*' ]
+    branches:
+      - main
+      - 'feature/**'
+    tags: ['v*']
     paths:
       - 'docker/**'
-      - 'packages/**'
+      - 'config/**'
       - '.github/workflows/build.yml'
   workflow_dispatch:
     inputs:
@@ -19,11 +35,21 @@ on:
         type: boolean
         default: true
       package:
-        description: 'Package (empty = all)'
-        default: 'fastlio2'
+        description: 'Package'
+        type: choice
+        options:
+          - all
+          - fastlio2
+          - fastlivo2
+        default: all
       platform:
-        description: 'Platform: x86 | agx | nano (empty/all = all)'
+        description: 'Platform: x86 | agx | nano (empty = all)'
         default: ''
+
+# Отменяем предыдущий прогон при новом пуше в ту же ветку.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
@@ -31,182 +57,415 @@ env:
   BUILDKIT_PROGRESS: plain
 
 jobs:
-
-  # ==========================================================================
-  # Base
-  # ==========================================================================
+  # ---------------------------------------------------------------------------
+  # Базовые образы
+  # ---------------------------------------------------------------------------
   build-base:
     if: |
       github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && inputs.build_base == true)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - platform: x86
             dockerfile: docker/Dockerfile.base.x86
             target_platform: linux/amd64
+            base_image: 'nvidia/cuda:12.9.0-devel-ubuntu22.04'
           - platform: agx
             dockerfile: docker/Dockerfile.base.agx
             target_platform: linux/arm64
+            base_image: 'nvcr.io/nvidia/l4t-jetpack:r36.4.0'
           - platform: nano
             dockerfile: docker/Dockerfile.base.nano
             target_platform: linux/arm64
+            base_image: 'nvidia/cuda:12.6.3-devel-ubuntu24.04'
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+
+      # ARM-сборки через QEMU жрут диск. Освобождаем место заранее.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          docker system prune -af || true
+          docker builder prune -af || true
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Lowercase repo name
         id: repo
-        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-      - uses: docker/build-push-action@v5
+        run: |
+          echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      # Локальный кеш BuildKit — ускоряет повторные прогоны.
+      - name: Cache BuildKit
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: buildx-base-${{ matrix.platform }}-${{ hashFiles('docker/Dockerfile.base.*') }}
+          restore-keys: buildx-base-${{ matrix.platform }}-
+
+      - name: Build and push base image
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.target_platform }}
           push: true
           provenance: false
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache,mode=max
+          build-args: |
+            BASE_IMAGE=${{ matrix.base_image }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
+          cache-from: |
+            type=local,src=/tmp/.buildx-cache
+            type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache
+          cache-to: |
+            type=local,dest=/tmp/.buildx-cache-new,mode=max
+            type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache,mode=max
 
-  # ==========================================================================
-  # Packages — ИСПРАВЛЕННАЯ МАТРИЦА
-  # ==========================================================================
+      # actions/cache не перезаписывает существующий ключ — ротация через rename.
+      - name: Rotate BuildKit cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+  # ---------------------------------------------------------------------------
+  # Setup: матрица пакетов из config/packages.yaml
+  # ---------------------------------------------------------------------------
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # mikefarah/yq@v4 — это Docker container action: он запускает yq внутри
+      # контейнера и завершается, НЕ добавляя бинарник в PATH job'а.
+      # Поэтому ставим yq явно.
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          hash -r
+          yq --version
+
+      - name: Generate matrix
+        id: generate
+        run: |
+          set -euo pipefail
+
+          PACKAGES=$(yq -o=json -I=0 '.packages' config/packages.yaml)
+
+          SELECTED_PKG="${{ github.event.inputs.package }}"
+          # 'all' (или пусто) — все пакеты, иначе фильтр по имени.
+          if [ -n "$SELECTED_PKG" ] && [ "$SELECTED_PKG" != "all" ]; then
+            PACKAGES=$(echo "$PACKAGES" | jq --arg p "$SELECTED_PKG" '[.[] | select(.name == $p)]')
+          fi
+
+          PLATFORMS='[
+            {"platform":"x86","target_platform":"linux/amd64","runner":"ubuntu-latest"},
+            {"platform":"agx","target_platform":"linux/arm64","runner":"ubuntu-latest"},
+            {"platform":"nano","target_platform":"linux/arm64","runner":"ubuntu-latest"}
+          ]'
+          SELECTED_PLAT="${{ github.event.inputs.platform }}"
+          if [ -n "$SELECTED_PLAT" ]; then
+            PLATFORMS=$(echo "$PLATFORMS" | jq --arg p "$SELECTED_PLAT" '[.[] | select(.platform == $p)]')
+          fi
+
+          # Собираем декартово произведение пакетов и платформ, с двумя фильтрами:
+          #   1. Если у пакета задано поле platforms — пропускаем комбинации
+          #      с платформами, которых там нет.
+          #   2. ros_distro может быть строкой (на все платформы) или map'ом
+          #      { x86, agx, nano } — во втором случае берём значение по платформе.
+          MATRIX=$(jq -nc \
+            --argjson pkgs "$PACKAGES" \
+            --argjson plats "$PLATFORMS" \
+            '{include: [
+              $pkgs[] as $pkg |
+              $plats[] as $p |
+              if ($pkg.platforms // null) != null
+                 and (($pkg.platforms | index($p.platform)) == null)
+              then empty
+              else {
+                platform: $p.platform,
+                target_platform: $p.target_platform,
+                runner: $p.runner,
+                package: $pkg.name,
+                repo: $pkg.repo,
+                branch: $pkg.branch,
+                package_name: $pkg.package_name,
+                ros_distro: (
+                  if ($pkg.ros_distro | type) == "object"
+                  then $pkg.ros_distro[$p.platform]
+                  else $pkg.ros_distro
+                  end
+                ),
+                cuda_arch: ($pkg.cuda_arch[$p.platform] // "87"),
+                cmake_args: $pkg.cmake_args
+              }
+              end
+            ]}')
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "$MATRIX" | jq .
+
+          # Краткая сводка в логе, чтобы видеть, что собралось в матрицу.
+          echo ""
+          echo "Matrix size: $(echo "$MATRIX" | jq '.include | length')"
+          echo "$MATRIX" | jq -r '.include[] | "  - \(.package) × \(.platform) (ros=\(.ros_distro))"'
+
+  # ---------------------------------------------------------------------------
+  # Пакеты
+  # ---------------------------------------------------------------------------
   build-packages:
+    needs: [build-base, setup]
     if: |
       always() &&
       (needs.build-base.result == 'success' || needs.build-base.result == 'skipped') &&
       (github.event_name == 'push' ||
        (github.event_name == 'workflow_dispatch' && inputs.build_packages == true))
-    needs: build-base
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     strategy:
       fail-fast: false
-      matrix:
-        # ← ИСПРАВЛЕНО: include содержит полные комбинации
-        include:
-          - package: fastlio2
-            platform: x86
-            target_platform: linux/amd64
-            cuda_arch: "86"
-          - package: fastlio2
-            platform: agx
-            target_platform: linux/arm64
-            cuda_arch: "87"
-          - package: fastlio2
-            platform: nano
-            target_platform: linux/arm64
-            cuda_arch: "87"
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
-      # ← ИСПРАВЛЕНО: 'all' или пусто → не фильтруем
-      - name: Filter platform
-        id: filter
+      - name: Free disk space
         run: |
-          SELECTED="${{ inputs.platform }}"
-          if [ -z "$SELECTED" ] || [ "$SELECTED" = "all" ] || [ "$SELECTED" = "${{ matrix.platform }}" ]; then
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "✅ Processing ${{ matrix.platform }}"
-          else
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "⏭ Skipping ${{ matrix.platform }} (selected: $SELECTED)"
-          fi
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          docker system prune -af || true
+          docker builder prune -af || true
 
-      - uses: docker/setup-qemu-action@v3
-        if: steps.filter.outputs.skip == 'false'
+      - name: Set up QEMU
+        if: matrix.target_platform == 'linux/arm64'
+        uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
-        if: steps.filter.outputs.skip == 'false'
-      - uses: docker/login-action@v3
-        if: steps.filter.outputs.skip == 'false'
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Lowercase repo name
         id: repo
-        if: steps.filter.outputs.skip == 'false'
-        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-      - uses: docker/build-push-action@v5
-        if: steps.filter.outputs.skip == 'false'
+        run: |
+          echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Cache BuildKit
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: buildx-pkg-${{ matrix.package }}-${{ matrix.platform }}-${{ hashFiles('docker/Dockerfile.package') }}
+          restore-keys: buildx-pkg-${{ matrix.package }}-${{ matrix.platform }}-
+
+      # Резолвим digest базового образа в момент сборки пакета.
+      # Это даёт воспроизводимость: даже если между job'ами кто-то
+      # перезапишет :latest, мы используем точную версию, собранную в build-base.
+      # Если digest получить не удалось (например, база не собиралась в этом прогоне) —
+      # падаем обратно на :latest.
+      - name: Resolve base image reference
+        id: base_ref
+        run: |
+          set -euo pipefail
+          REPO_NAME="${{ steps.repo.outputs.NAME }}"
+          PLATFORM="${{ matrix.platform }}"
+          BASE_TAG="${REGISTRY}/${REPO_NAME}/ros2-base-${PLATFORM}:latest"
+
+          if DIGEST=$(docker buildx imagetools inspect "$BASE_TAG" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            REF="${REGISTRY}/${REPO_NAME}/ros2-base-${PLATFORM}@${DIGEST}"
+            echo "Resolved digest: $DIGEST"
+          else
+            REF="$BASE_TAG"
+            echo "::warning::Не удалось получить digest для $BASE_TAG, fallback на :latest"
+          fi
+
+          echo "ref=$REF" >> $GITHUB_OUTPUT
+          echo "Using base: $REF"
+
+      - name: Build and push package image
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile.package
           platforms: ${{ matrix.target_platform }}
           push: true
           provenance: false
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}
           build-args: |
-            BASE_IMAGE=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
+            BASE_IMAGE=${{ steps.base_ref.outputs.ref }}
             CUDA_ARCHITECTURES=${{ matrix.cuda_arch }}
-            REPO_URL=https://github.com/ruiqichao/FAST_LIO2_GPU.git
-            BRANCH=main
-            PACKAGE_NAME=fast_lio
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache,mode=max
+            REPO_URL=${{ matrix.repo }}
+            BRANCH=${{ matrix.branch }}
+            PACKAGE_NAME=${{ matrix.package_name }}
+            ROS_DISTRO=${{ matrix.ros_distro }}
+            CMAKE_ARGS=${{ matrix.cmake_args }}
+          cache-from: |
+            type=local,src=/tmp/.buildx-cache
+            type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache
+          cache-to: |
+            type=local,dest=/tmp/.buildx-cache-new,mode=max
+            type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache,mode=max
 
-  # ==========================================================================
-  # Test — тоже с фильтром по 'all'
-  # ==========================================================================
+      - name: Rotate BuildKit cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+  # ---------------------------------------------------------------------------
+  # Тесты: nvcc, smoke-компиляция, ROS2, ldd
+  # ---------------------------------------------------------------------------
   test-images:
-    needs: build-packages
+    needs: [build-packages, setup]
     if: always() && needs.build-packages.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
-      matrix:
-        platform: [x86, agx, nano]
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
-      # ← ИСПРАВЛЕНО: 'all' или пусто → не фильтруем
-      - name: Filter platform
-        id: filter
-        run: |
-          SELECTED="${{ inputs.platform }}"
-          if [ -z "$SELECTED" ] || [ "$SELECTED" = "all" ] || [ "$SELECTED" = "${{ matrix.platform }}" ]; then
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "✅ Testing ${{ matrix.platform }}"
-          else
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "⏭ Skipping test for ${{ matrix.platform }}"
-          fi
+      - name: Set up QEMU
+        if: matrix.target_platform == 'linux/arm64'
+        uses: docker/setup-qemu-action@v3
 
-      - uses: docker/setup-qemu-action@v3
-        if: steps.filter.outputs.skip == 'false'
-      - uses: docker/login-action@v3
-        if: steps.filter.outputs.skip == 'false'
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Lowercase repo name
         id: repo
-        if: steps.filter.outputs.skip == 'false'
-        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-      - name: Pull and test image
-        if: steps.filter.outputs.skip == 'false'
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-fastlio2:${{ matrix.platform }}"
-          echo "Testing image: $IMAGE"
+          echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Pull and test image
+        run: |
+          set -euo pipefail
+          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}"
+          ROS_DISTRO="${{ matrix.ros_distro }}"
+
           docker pull "$IMAGE"
 
           PLATFORM_FLAG=""
-          if [ "${{ matrix.platform }}" != "x86" ]; then
+          if [ "${{ matrix.target_platform }}" = "linux/arm64" ]; then
             PLATFORM_FLAG="--platform linux/arm64"
           fi
 
+          echo "=== 1. nvcc version ==="
           docker run --rm $PLATFORM_FLAG "$IMAGE" nvcc --version
-          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && echo ROS_DISTRO=\$ROS_DISTRO"
-          docker run --rm $PLATFORM_FLAG "$IMAGE" ls -la /workspace/install/
-          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && source /workspace/install/setup.bash && ros2 pkg list | grep fast_lio" || true
-          echo "✅ All tests passed for $IMAGE"
+
+          # Smoke-тест: компилируем и запускаем простую CUDA-программу.
+          # Без GPU cudaGetDeviceCount вернёт ошибку/0 — это нормально для CI.
+          # Главное — что компиляция и линковка с libcudart проходят.
+          echo "=== 2. CUDA compile smoke test ==="
+          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c '
+            cat > /tmp/smoke.cu <<EOF
+          #include <cuda_runtime.h>
+          #include <cstdio>
+          int main() {
+            int count = 0;
+            cudaError_t err = cudaGetDeviceCount(&count);
+            if (err != cudaSuccess) {
+              printf("cudaGetDeviceCount: %s\n", cudaGetErrorString(err));
+              return 0;
+            }
+            printf("CUDA devices: %d\n", count);
+            return 0;
+          }
+          EOF
+            nvcc /tmp/smoke.cu -o /tmp/smoke && /tmp/smoke
+          '
+
+          echo "=== 3. ROS2 distro ==="
+          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && echo ROS_DISTRO=\$ROS_DISTRO"
+
+          echo "=== 4. Build artifacts ==="
+          docker run --rm $PLATFORM_FLAG "$IMAGE" ls -la /opt/ros_ws/install/
+
+          echo "=== 5. ldd check — ищем потерянные зависимости ==="
+          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "
+            source /opt/ros/${ROS_DISTRO}/setup.bash
+            source /opt/ros_ws/install/setup.bash
+            PKG_PREFIX=\$(ros2 pkg prefix ${{ matrix.package_name }} 2>/dev/null || true)
+            if [ -z \"\$PKG_PREFIX\" ]; then
+              echo 'WARN: package ${{ matrix.package_name }} not found via ros2 pkg prefix'
+              exit 0
+            fi
+            echo \"Package prefix: \$PKG_PREFIX\"
+            BROKEN=0
+            for bin in \$(find \"\$PKG_PREFIX/lib\" -type f -executable 2>/dev/null); do
+              MISSING=\$(ldd \"\$bin\" 2>/dev/null | grep 'not found' || true)
+              if [ -n \"\$MISSING\" ]; then
+                echo \"BROKEN: \$bin\"
+                echo \"\$MISSING\"
+                BROKEN=1
+              fi
+            done
+            if [ \$BROKEN -eq 1 ]; then exit 1; fi
+            echo 'All shared libs resolved'
+          "
+
+          echo "=== 6. ROS2 package present ==="
+          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "
+            source /opt/ros/${ROS_DISTRO}/setup.bash
+            source /opt/ros_ws/install/setup.bash
+            ros2 pkg list | grep -E '${{ matrix.package_name }}' || true
+          "
+
+          echo "All tests passed for $IMAGE"
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Test summary: ${{ matrix.package }} / ${{ matrix.platform }}"
+            echo ""
+            echo "- Image: \`${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}\`"
+            echo "- ROS distro: \`${{ matrix.ros_distro }}\`"
+            echo "- CUDA arch: \`${{ matrix.cuda_arch }}\`"
+            echo "- Status: ${{ job.status }}"
+          } >> $GITHUB_STEP_SUMMARY

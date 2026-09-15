@@ -1,40 +1,38 @@
 #!/usr/bin/env bash
+# Добавить новый пакет в config/packages.yaml.
+# Использование:
+#   ./scripts/add_package.sh <name> <repo_url> [branch] [package_name] [ros_distro]
 set -euo pipefail
-
-# Генерация конфигурации для нового пакета
-# Usage: ./scripts/add_package.sh <name> <repo_url> [branch]
 
 NAME="${1:-}"
 REPO="${2:-}"
 BRANCH="${3:-main}"
+PKG_NAME="${4:-$NAME}"
+ROS_DISTRO="${5:-humble}"
 
 if [ -z "$NAME" ] || [ -z "$REPO" ]; then
-    echo "Usage: ./scripts/add_package.sh <name> <repo_url> [branch]"
-    echo ""
-    echo "Example:"
-    echo "  ./scripts/add_package.sh my_slam https://github.com/user/my_slam.git humble"
+    echo "Usage: $0 <name> <repo_url> [branch] [package_name] [ros_distro]"
     exit 1
 fi
 
-mkdir -p packages
+if ! command -v yq &>/dev/null; then
+    echo "ERROR: yq is required. Install: https://github.com/mikefarah/yq"
+    exit 1
+fi
 
-cat > "packages/${NAME}.yaml" <<EOF
-name: ${NAME}
-repo: ${REPO}
-branch: ${BRANCH}
-ros_distro: humble
-cuda_arch:
-  x86: "86"
-  agx: "87"
-  nano: "87"
-EOF
+if yq -e ".packages[] | select(.name == \"$NAME\")" config/packages.yaml &>/dev/null; then
+    echo "ERROR: Package '$NAME' already exists in config/packages.yaml"
+    exit 1
+fi
 
-echo ""
-echo "Created: packages/${NAME}.yaml"
-echo ""
-echo "To add to CI/CD, add '${NAME}' to the matrix.package list in .github/workflows/build.yml"
-echo ""
-echo "Then update the build-args in the build-packages job:"
-echo "  REPO_URL=${REPO}"
-echo "  BRANCH=${BRANCH}"
-echo "  PACKAGE_NAME=${NAME}"
+yq -i ".packages += [{
+  \"name\": \"$NAME\",
+  \"repo\": \"$REPO\",
+  \"branch\": \"$BRANCH\",
+  \"package_name\": \"$PKG_NAME\",
+  \"ros_distro\": \"$ROS_DISTRO\",
+  \"cuda_arch\": {\"x86\": \"86\", \"agx\": \"87\", \"nano\": \"87\"},
+  \"cmake_args\": \"-DCMAKE_BUILD_TYPE=Release\"
+}]" config/packages.yaml
+
+echo "Added package '$NAME' to config/packages.yaml"

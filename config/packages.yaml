@@ -1,0 +1,46 @@
+# Список ROS2-пакетов для автоматической сборки.
+#
+# Поля:
+#   name         — имя пакета (используется в тегах образов)
+#   repo         — Git URL репозитория
+#   branch       — ветка
+#   package_name — имя пакета внутри репозитория (для colcon --packages-select)
+#   ros_distro   — ROS2-дистрибутив. Строка или map { x86, agx, nano }.
+#   cuda_arch    — CUDA_ARCHITECTURES для каждой платформы
+#   cmake_args   — дополнительные флаги CMake
+#   platforms    — (опционально) список платформ, для которых собирать пакет.
+#                  Если не указан — собирается для всех трёх.
+
+packages:
+  - name: fastlio2
+    repo: https://github.com/ruiqichao/FAST_LIO2_GPU.git
+    branch: main
+    package_name: fast_lio
+    ros_distro:
+      x86: humble
+      agx: humble
+      nano: jazzy
+    cuda_arch:
+      x86: "86"
+      agx: "87"
+      nano: "87"
+    cmake_args: "-DCMAKE_BUILD_TYPE=Release -DFASTLIO_USE_CUDA=ON -DBUILD_TESTING=OFF"
+
+  - name: fastlivo2
+    repo: https://github.com/hku-mars/FAST-LIVO2.git
+    branch: main
+    package_name: fast_livo
+    ros_distro:
+      x86: humble
+      agx: humble
+      nano: jazzy
+    cuda_arch:
+      x86: "86"
+      agx: "87"
+      nano: "87"
+    cmake_args: "-DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF"
+    # Vikit — catkin-пакет, не совместим с ament (ROS2 Jazzy).
+    # Собираем fastlivo2 только под Humble: x86 и agx.
+    platforms:
+      - x86
+      - agx
