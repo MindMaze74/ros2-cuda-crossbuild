@@ -1,5 +1,14 @@
 # Универсальный шаблон сборки ROS2-пакета с CUDA.
 # Поддерживает Humble и Jazzy через аргумент ROS_DISTRO.
+#
+# Аргументы:
+#   BASE_IMAGE           — базовый образ с ROS2 + CUDA (ros2-base-*)
+#   CUDA_ARCHITECTURES   — 86 для x86 (Ampere), 87 для Orin
+#   REPO_URL             — Git URL собираемого пакета
+#   BRANCH               — ветка (по умолчанию main)
+#   PACKAGE_NAME         — имя пакета внутри репозитория (для colcon --packages-select)
+#   ROS_DISTRO           — humble (Ubuntu 22.04) или jazzy (Ubuntu 24.04)
+#   CMAKE_ARGS           — дополнительные флаги CMake
 
 ARG BASE_IMAGE
 ARG CUDA_ARCHITECTURES
@@ -27,9 +36,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=${ROS_DISTRO}
 ENV MAKEFLAGS="-j$(nproc)"
 
-# Ставим CMake 3.28+ из репозитория Kitware.
+# CMake 3.28+ из репозитория Kitware.
 # CMake 3.22 из Ubuntu 22.04 не пробрасывает CMAKE_CUDA_STANDARD в nvcc,
 # из-за чего nvcc компилирует .cu с C++14 и падает на заголовках ROS2.
+# CMake 4.4 из Kitware корректно обрабатывает CMAKE_CUDA_STANDARD=17.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         wget gpg ca-certificates lsb-release && \
@@ -43,6 +53,56 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/* && \
     cmake --version
 
+# Python dev-заголовки. Нужны для find_package(PythonLibs REQUIRED)
+# в CMakeLists.txt FAST_LIO2_GPU. В базовых образах их нет,
+# rosdep их не тянет (не задекларированы в package.xml репозитория).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3-dev \
+        libpython3-dev \
+        python3-numpy \
+    && rm -rf /var/lib/apt/lists/*
+
+# Дополнительные зависимости FAST-LIVO2: Sophus и Vikit (rpg_vikit).
+# Ставим только если собираем fast_livo — для fast_lio они не нужны.
+#
+# Sophus — 1.22.10, совместим с C++17 и Eigen 3.4.
+# CMAKE_POLICY_VERSION_MINIMUM=3.5 — обход ошибки CMake 4.x на старом
+# cmake_minimum_required(VERSION 3.0) внутри Sophus.
+#
+# Vikit — форк HKU MARS: https://github.com/xuankuzcr/rpg_vikit
+RUN if [ "$PACKAGE_NAME" = "fast_livo" ]; then \
+      set -eux; \
+      apt-get update && apt-get install -y --no-install-recommends \
+        libeigen3-dev \
+        libopencv-dev \
+        ros-${ROS_DISTRO}-cv-bridge \
+        ros-${ROS_DISTRO}-image-transport \
+        ros-${ROS_DISTRO}-tf2-eigen \
+        ros-${ROS_DISTRO}-pcl-ros \
+        ros-${ROS_DISTRO}-pcl-conversions \
+      && rm -rf /var/lib/apt/lists/*; \
+      \
+      git clone --depth 1 --branch 1.22.10 https://github.com/strasdat/Sophus.git /tmp/Sophus; \
+      cd /tmp/Sophus && mkdir build && cd build \
+        && cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DBUILD_SOPHUS_TESTS=OFF \
+            -DBUILD_SOPHUS_EXAMPLES=OFF \
+        && make -j$(nproc) install \
+        && rm -rf /tmp/Sophus; \
+      \
+      git clone --depth 1 https://github.com/xuankuzcr/rpg_vikit.git /tmp/vikit; \
+      cd /tmp/vikit/vikit_common && mkdir build && cd build \
+        && cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        && make -j$(nproc) install \
+        && rm -rf /tmp/vikit; \
+      \
+      ldconfig; \
+    fi
+
 WORKDIR /workspace/src
 
 # Клонируем пакет и submodules (ikd-Tree нужен для FAST-LIO)
@@ -55,15 +115,18 @@ RUN git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${PACKAGE_NAME}" && 
 RUN git clone --depth 1 https://github.com/Livox-SDK/livox_ros_driver2.git \
         livox_ros_driver2 || true
 
-# Устанавливаем зависимости через rosdep
+# Зависимости через rosdep.
+# pcl_ros НЕ скипаем — FAST-LIVO2 и FAST-LIO2 его используют,
+# без него падает компиляция на #include <pcl_ros/...>.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     source /opt/ros/${ROS_DISTRO}/setup.bash && \
     rosdep install --from-paths . --ignore-src -y \
-        --skip-keys=livox_ros_driver2,pcl_ros || true
+        --skip-keys=livox_ros_driver2 || true
 
-# Собираем пакет. CMAKE_CUDA_STANDARD=17 работает только с CMake 3.28+.
-# -std=c++17 в CMAKE_CUDA_FLAGS не передаём, чтобы не конфликтовал.
+# Сборка.
+# CMAKE_POLICY_VERSION_MINIMUM=3.5 — обход CMake 4.x на старых
+# cmake_minimum_required в CMakeLists.txt пакетов HKU MARS.
 WORKDIR /workspace
 RUN --mount=type=cache,target=/workspace/build \
     source /opt/ros/${ROS_DISTRO}/setup.bash && \
@@ -73,6 +136,7 @@ RUN --mount=type=cache,target=/workspace/build \
         --install-base /workspace/install \
         --cmake-args \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON \
             -DCMAKE_CXX_EXTENSIONS=OFF \
@@ -105,7 +169,7 @@ WORKDIR /opt/ros_ws
 # Копируем собранные артефакты в стандартный путь
 COPY --from=builder /workspace/install /opt/ros_ws/install
 
-# Проверяем CUDA в финальном образе
+# CUDA присутствует в базовом образе, но проверим явно.
 RUN nvcc --version && echo "CUDA toolkit present"
 
 # Автозагрузка окружения ROS2

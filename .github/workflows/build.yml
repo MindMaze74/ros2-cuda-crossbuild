@@ -38,6 +38,7 @@ on:
         options:
           - all
           - fastlio2
+          - fastlivo2
         default: all
       platform:
         description: 'Platform: x86 | agx | nano (empty = all)'
