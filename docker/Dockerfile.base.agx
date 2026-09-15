@@ -1,75 +1,43 @@
-# syntax=docker/dockerfile:1.7
-# ============================================================================
-# AGX Orin — JetPack 6.2.2 (L4T R36.4.0)
-# ROS2 Humble устанавливается ПОВЕРХ официального L4T
-# ============================================================================
+# docker/Dockerfile.base.agx
+FROM nvcr.io/nvidia/l4t-jetpack:r36.4.0
 
-ARG BASE_IMAGE
-FROM ${BASE_IMAGE}
+# Установка ROS 2 Humble (если не предустановлен в базовом образе)
+# RUN apt-get update && apt-get install -y ros-humble-ros-base ...
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV ROS_DISTRO=humble
-ENV CUDA_ARCHITECTURES="87"
+WORKDIR /workspace/src
 
-# ---------------------------------------------------------------------------
-# 1. Workaround QEMU: подменяем ldconfig заглушкой
-# ---------------------------------------------------------------------------
-RUN if [ -x /sbin/ldconfig ] && [ ! -e /sbin/ldconfig.real ]; then \
-        cp /sbin/ldconfig /sbin/ldconfig.real; \
-    fi && \
-    printf '#!/bin/sh\nexit 0\n' > /sbin/ldconfig && \
-    chmod +x /sbin/ldconfig
+RUN git clone --depth 1 --branch "main" "https://github.com/ruiqichao/FAST_LIO2_GPU.git" "fast_lio" && \
+    cd "fast_lio" && \
+    git submodule update --init --recursive --depth 1 || \
+    (echo "⚠️ submodules not found, continuing" && true)
 
-# ---------------------------------------------------------------------------
-# 2. Репозиторий ROS2 Humble
-# ---------------------------------------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl gnupg2 lsb-release ca-certificates \
-    && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-        -o /usr/share/keyrings/ros-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
-        http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
-        > /etc/apt/sources.list.d/ros2.list \
-    && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 https://github.com/Livox-SDK/livox_ros_driver2.git livox_ros_driver2 || true
 
-# ---------------------------------------------------------------------------
-# 3. ROS2 Humble + pcl_ros + build-tools
-# ---------------------------------------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ros-${ROS_DISTRO}-ros-base \
-        ros-${ROS_DISTRO}-pcl-ros \
-        ros-${ROS_DISTRO}-pcl-conversions \
-        python3-colcon-common-extensions \
-        python3-rosdep \
-        python3-vcstool \
-        python3-pip \
-        build-essential cmake git wget \
-        libpcl-dev libeigen3-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN rosdep init 2>/dev/null || true && \
-    rosdep update --rosdistro ${ROS_DISTRO}
-
-# ---------------------------------------------------------------------------
-# 4. Livox-SDK2
-# ---------------------------------------------------------------------------
-RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 \
-    && cd /tmp/Livox-SDK2 \
-    && mkdir build && cd build \
-    && cmake .. -DCMAKE_BUILD_TYPE=Release \
-    && make -j$(nproc) \
-    && make install \
-    && rm -rf /tmp/Livox-SDK2
-
-# ---------------------------------------------------------------------------
-# 5. Восстановить настоящий ldconfig
-# ---------------------------------------------------------------------------
-RUN if [ -e /sbin/ldconfig.real ]; then \
-        mv /sbin/ldconfig.real /sbin/ldconfig && \
-        chmod +x /sbin/ldconfig; \
-    fi
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    source /opt/ros/humble/setup.bash && \
+    rosdep install --from-paths . --ignore-src -y --skip-keys=livox_ros_driver2,pcl_ros || true
 
 WORKDIR /workspace
-ENV PATH="/opt/ros/${ROS_DISTRO}/bin:${PATH}"
 
-CMD ["/bin/bash"]
+# ИСПРАВЛЕННАЯ СТРОКА СБОРКИ:
+# 1. Добавлен /bin/bash -c
+# 2. CMAKE_CUDA_ARCHITECTURES установлен в 87 (архитектура Jetson AGX Orin)
+RUN --mount=type=cache,target=/workspace/build \
+    /bin/bash -c "source /opt/ros/humble/setup.bash && \
+    colcon build \
+      --packages-select fast_lio \
+      --build-base /workspace/build \
+      --install-base /workspace/install \
+      --cmake-args \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_STANDARD=17 \
+        -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+        -DCMAKE_CXX_EXTENSIONS=OFF \
+        -DCMAKE_CUDA_STANDARD=17 \
+        -DCMAKE_CUDA_STANDARD_REQUIRED=ON \
+        -DCMAKE_CUDA_EXTENSIONS=OFF \
+        -DCMAKE_CUDA_FLAGS=\"--expt-relaxed-constexpr --expt-extended-lambda\" \
+        -DCMAKE_CUDA_ARCHITECTURES=87 \
+        -DFASTLIO_USE_CUDA=ON \
+        -DBUILD_TESTING=OFF"
