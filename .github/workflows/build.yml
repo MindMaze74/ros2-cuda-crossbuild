@@ -1,220 +1,152 @@
-name: CI/CD Pipeline
+name: CI/CD Pipeline - ROS2 FastLIO Build
 
 on:
   push:
-    branches:
-      - main
-      - 'feature/**'
-      - 'fix/**'
-      - 'experiment/**'
-    tags: [ 'v*' ]
-    paths:
-      - 'docker/**'
-      - 'packages/**'
-      - '.github/workflows/build.yml'
+    branches: [ "main", "develop" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
   workflow_dispatch:
-    inputs:
-      build_base:
-        description: 'Rebuild base images'
-        type: boolean
-        default: false
-      build_packages:
-        description: 'Rebuild package images'
-        type: boolean
-        default: true
-      package:
-        description: 'Package (empty = all)'
-        default: 'fastlio2'
-      platform:
-        description: 'Platform: x86 | agx | nano (empty/all = all)'
-        default: ''
 
 env:
   REGISTRY: ghcr.io
-  DOCKER_BUILDKIT: 1
-  BUILDKIT_PROGRESS: plain
+  IMAGE_NAME: fastlio-ros2-images
 
 jobs:
-
-  # ==========================================================================
-  # Base
-  # ==========================================================================
+  # ----------------------------------------------------------------------
+  # JOB 1: Сборка базовых образов (build-base)
+  # Создает 3 базовых образа с установленным ROS2 Humble и зависимостями.
+  # ----------------------------------------------------------------------
   build-base:
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.build_base == true)
     strategy:
-      fail-fast: false
       matrix:
-        include:
-          - platform: x86
-            dockerfile: docker/Dockerfile.base.x86
-            target_platform: linux/amd64
-            base_image: 'nvidia/cuda:12.9.0-devel-ubuntu22.04'
-          - platform: agx
-            dockerfile: docker/Dockerfile.base.agx
-            target_platform: linux/arm64
-            base_image: 'nvcr.io/nvidia/l4t-jetpack:r36.4.0'
-          - platform: nano
-            dockerfile: docker/Dockerfile.base.nano
-            target_platform: linux/arm64
-            base_image: 'nvcr.io/nvidia/l4t-jetpack:r36.4.0'
+        platform: [x86, agx, nano]
+    
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up QEMU
+        # Необходимо для эмуляции ARM инструкций на x86 раннере GitHub Actions
+        uses: docker/setup-qemu-action@v2
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
-      - name: Lowercase repo name
-        id: repo
-        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-      - uses: docker/build-push-action@v5
+          platforms: all
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        with:
+          buildkitd-flags: "--debug"
+          driver-opts: network.host=true
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: \${{ env.REGISTRY }}
+          username: \${{ github.actor }}
+          password: \${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Base Image (Platform: \${{ matrix.platform }})
+        uses: docker/build-push-action@v4
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: ${{ matrix.target_platform }}
-          push: true
-          provenance: false
+          file: docker/Dockerfile.base.\${{ matrix.platform }}
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME }}:base-${{ matrix.platform }}-latest
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME }}:base-${{ matrix.platform }}-buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME }}:base-${{ matrix.platform }}-buildcache,mode=max
+          # Передаем архитектуру CUDA как аргумент, если она используется внутри Dockerfile для условной логики
           build-args: |
-            BASE_IMAGE=${{ matrix.base_image }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:${{ github.sha }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache,mode=max
+            CUDA_ARCH=\${{ matrix.cuda_arch }}
 
-  # ==========================================================================
-  # Packages
-  # ==========================================================================
+  # ----------------------------------------------------------------------
+  # JOB 2: Сборка пакетов (build-packages)
+  # Собирает FAST_LIO2 с правильными флагами для каждой платформы.
+  # Зависит от успешного завершения build-base.
+  # ----------------------------------------------------------------------
   build-packages:
-    if: |
-      always() &&
-      (needs.build-base.result == 'success' || needs.build-base.result == 'skipped') &&
-      (github.event_name == 'push' ||
-       (github.event_name == 'workflow_dispatch' && inputs.build_packages == true))
     needs: build-base
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
         include:
-          - package: fastlio2
-            platform: x86
-            target_platform: linux/amd64
+          - platform: x86
+            dockerfile: docker/Dockerfile.package.x86
             cuda_arch: "86"
-          - package: fastlio2
-            platform: agx
-            target_platform: linux/arm64
+            target: package-x86
+          - platform: agx
+            dockerfile: docker/Dockerfile.package.agx
             cuda_arch: "87"
-          - package: fastlio2
-            platform: nano
-            target_platform: linux/arm64
-            cuda_arch: "87"
+            target: package-agx
+          - platform: nano
+            dockerfile: docker/Dockerfile.package.nano
+            cuda_arch: "53"
+            target: package-nano
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-      - name: Filter platform
-        id: filter
-        run: |
-          SELECTED="${{ inputs.platform }}"
-          if [ -z "$SELECTED" ] || [ "$SELECTED" = "all" ] || [ "$SELECTED" = "${{ matrix.platform }}" ]; then
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "✅ Processing ${{ matrix.platform }}"
-          else
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "⏭ Skipping ${{ matrix.platform }} (selected: $SELECTED)"
-          fi
-
-      - uses: docker/setup-qemu-action@v3
-        if: steps.filter.outputs.skip == 'false'
-      - uses: docker/setup-buildx-action@v3
-        if: steps.filter.outputs.skip == 'false'
-      - uses: docker/login-action@v3
-        if: steps.filter.outputs.skip == 'false'
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
-      - name: Lowercase repo name
-        id: repo
-        if: steps.filter.outputs.skip == 'false'
-        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-      - uses: docker/build-push-action@v5
-        if: steps.filter.outputs.skip == 'false'
+          platforms: all
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        with:
+          buildkitd-flags: "--debug"
+          driver-opts: network.host=true
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: \${{ env.REGISTRY }}
+          username: \${{ github.actor }}
+          password: \${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Packages (Platform: \${{ matrix.platform }})
+        uses: docker/build-push-action@v4
         with:
           context: .
-          file: docker/Dockerfile.package
-          platforms: ${{ matrix.target_platform }}
-          push: true
-          provenance: false
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}-${{ github.sha }}
+          file: \${{ matrix.dockerfile }}
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME }}:pkg-${{ matrix.platform }}-latest
+          # Кэшируем слои сборки, чтобы не клонировать git и не ставить rosdep каждый раз
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME }}:pkg-${{ matrix.platform }}-buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME }}:pkg-${{ matrix.platform }}-buildcache,mode=max
           build-args: |
-            BASE_IMAGE=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
-            REPO_URL=https://github.com/ruiqichao/FAST_LIO2_GPU.git
-            BRANCH=main
             PACKAGE_NAME=fast_lio
-            CUDA_ARCHITECTURES=${{ matrix.cuda_arch }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache,mode=max
+            CUDA_ARCH=\${{ matrix.cuda_arch }}
+            CMAKE_CUDA_FLAGS="--expt-relaxed-constexpr --expt-extended-lambda"
 
-  # ==========================================================================
-  # Test
-  # ==========================================================================
-  test-images:
+  # ----------------------------------------------------------------------
+  # JOB 3: Публикация финальных образов (опционально)
+  # Если нужно сохранить готовые образы в реестре.
+  # ----------------------------------------------------------------------
+  publish:
     needs: build-packages
-    if: always() && needs.build-packages.result == 'success'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [x86, agx, nano]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Filter platform
-        id: filter
-        run: |
-          SELECTED="${{ inputs.platform }}"
-          if [ -z "$SELECTED" ] || [ "$SELECTED" = "all" ] || [ "$SELECTED" = "${{ matrix.platform }}" ]; then
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "✅ Testing ${{ matrix.platform }}"
-          else
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "⏭ Skipping test for ${{ matrix.platform }}"
-          fi
-
-      - uses: docker/setup-qemu-action@v3
-        if: steps.filter.outputs.skip == 'false'
-      - uses: docker/login-action@v3
-        if: steps.filter.outputs.skip == 'false'
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
-      - name: Lowercase repo name
-        id: repo
-        if: steps.filter.outputs.skip == 'false'
-        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-      - name: Pull and test image
-        if: steps.filter.outputs.skip == 'false'
+          registry: \${{ env.REGISTRY }}
+          username: \${{ github.actor }}
+          password: \${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Final Images
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-fastlio2:${{ matrix.platform }}"
-          echo "Testing image: $IMAGE"
-          docker pull "$IMAGE"
+          docker pull ${{ env.REGISTRY }}/${{ github.actor }}/\${{ env.IMAGE_NAME }}:pkg-x86-latest
+          docker tag ${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME }}:pkg-x86-latest ${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME }}:latest-x86
+          docker push ${{ env.REGISTRY }}/${{ github.actor }}/\${{ env.IMAGE_NAME }}:latest-x86
 
-          PLATFORM_FLAG=""
-          if [ "${{ matrix.platform }}" != "x86" ]; then
-            PLATFORM_FLAG="--platform linux/arm64"
-          fi
+          docker pull ${{ env.REGISTRY }}/${{ github.actor }}/\${{ env.IMAGE_NAME }}:pkg-agx-latest
+          docker tag ${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME }}:pkg-agx-latest ${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME }}:latest-agx
+          docker push ${{ env.REGISTRY }}/${{ github.actor }}/\${{ env.IMAGE_NAME }}:latest-agx
 
-          docker run --rm $PLATFORM_FLAG "$IMAGE" nvcc --version
-          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && echo ROS_DISTRO=\$ROS_DISTRO"
-          docker run --rm $PLATFORM_FLAG "$IMAGE" ls -la /opt/ros_ws/install/
-          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && source /opt/ros_ws/install/setup.bash && ros2 pkg list | grep fast_lio" || true
-          echo "✅ All tests passed for $IMAGE"
+          docker pull ${{ env.REGISTRY }}/${{ github.actor }}/\${{ env.IMAGE_NAME }}:pkg-nano-latest
+          docker tag ${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME }}:pkg-nano-latest ${{ env.REGISTRY }}/${{ github.actor }}/${{ env.IMAGE_NAME }}:latest-nano
+          docker push ${{ env.REGISTRY }}/${{ github.actor }}/\${{ env.IMAGE_NAME }}:latest-nano
