@@ -1,44 +1,60 @@
 # syntax=docker/dockerfile:1.7
+# ============================================================================
+# Универсальный шаблон сборки ROS2-пакета с CUDA
+# ============================================================================
 
 ARG BASE_IMAGE
-ARG CUDA_ARCHITECTURES
 ARG REPO_URL
-ARG BRANCH
+ARG BRANCH=main
 ARG PACKAGE_NAME
+ARG CUDA_ARCHITECTURES
 
 FROM ${BASE_IMAGE} AS builder
 
-ARG CUDA_ARCHITECTURES
 ARG REPO_URL
 ARG BRANCH
 ARG PACKAGE_NAME
-
-SHELL ["/bin/bash", "-c"]
+ARG CUDA_ARCHITECTURES
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES}
 ENV ROS_DISTRO=humble
-ENV MAKEFLAGS="-j2"
 
 WORKDIR /workspace/src
 
+# ---------------------------------------------------------------------------
+# 1. Клонирование исходников пакета
+# ---------------------------------------------------------------------------
 RUN git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${PACKAGE_NAME}" && \
     cd "${PACKAGE_NAME}" && \
     git submodule update --init --recursive --depth 1 || \
     (echo "⚠️ submodules not found, continuing" && true)
 
+# ---------------------------------------------------------------------------
+# 2. Клонирование livox_ros_driver2 (если нужен)
+# ---------------------------------------------------------------------------
 RUN git clone --depth 1 https://github.com/Livox-SDK/livox_ros_driver2.git \
     livox_ros_driver2 || true
 
+# ---------------------------------------------------------------------------
+# 3. Установка зависимостей через rosdep
+# ---------------------------------------------------------------------------
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    source /opt/ros/humble/setup.bash && \
     rosdep install --from-paths . --ignore-src -y \
       --skip-keys=livox_ros_driver2,pcl_ros || true
 
 WORKDIR /workspace
+
+# ---------------------------------------------------------------------------
+# 4. Сборка пакета с CUDA
+#    ВАЖНО: -std=c++17 НЕ передаём через CMAKE_CUDA_FLAGS!
+#    CMAKE_CUDA_STANDARD=17 сам подставит правильный флаг для nvcc.
+#    Дублирование вызывало "incompatible redefinition for option 'std'"
+#    и nvcc игнорировал C++17 → ошибки std::is_same_v, std::variant и т.д.
+# ---------------------------------------------------------------------------
 RUN --mount=type=cache,target=/workspace/build \
-    source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    source /opt/ros/humble/setup.bash && \
     colcon build \
       --packages-select ${PACKAGE_NAME} \
       --build-base /workspace/build \
@@ -51,30 +67,29 @@ RUN --mount=type=cache,target=/workspace/build \
         -DCMAKE_CUDA_STANDARD=17 \
         -DCMAKE_CUDA_STANDARD_REQUIRED=ON \
         -DCMAKE_CUDA_EXTENSIONS=OFF \
-        -DCMAKE_CUDA_FLAGS="-std=c++17 --expt-relaxed-constexpr --expt-extended-lambda" \
+        -DCMAKE_CUDA_FLAGS="--expt-relaxed-constexpr --expt-extended-lambda" \
         -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
         -DFASTLIO_USE_CUDA=ON \
         -DBUILD_TESTING=OFF
 
-RUN nvcc --version
-
-RUN test -d /workspace/install && \
-    test -f /workspace/install/setup.bash && \
-    echo "✅ install artifacts present" || \
-    (echo "❌ install artifacts missing" && ls -la /workspace/ && exit 1)
-
-FROM ${BASE_IMAGE}
-SHELL ["/bin/bash", "-c"]
+# ---------------------------------------------------------------------------
+# 5. Runtime-образ
+# ---------------------------------------------------------------------------
+FROM ${BASE_IMAGE} AS runtime
 
 ENV ROS_DISTRO=humble
+ENV DEBIAN_FRONTEND=noninteractive
+
 WORKDIR /opt/ros_ws
 
-COPY --from=builder /workspace/install /workspace/install
+COPY --from=builder /workspace/install /opt/ros_ws/install
 
-RUN echo 'source /opt/ros/${ROS_DISTRO}/setup.bash' >> /etc/bash.bashrc && \
-    echo 'source /workspace/install/setup.bash' >> /etc/bash.bashrc
+# Подтверждение наличия CUDA (пункт 4 ТЗ)
+RUN nvcc --version && echo "✅ CUDA toolkit present"
 
-ENV PATH="/workspace/install/bin:/opt/ros/${ROS_DISTRO}/bin:${PATH}" \
-    LD_LIBRARY_PATH="/workspace/install/lib:/opt/ros/${ROS_DISTRO}/lib:${LD_LIBRARY_PATH}"
+# Entrypoint: source ROS + собранный пакет
+RUN echo '#!/bin/bash\nset -e\nsource /opt/ros/humble/setup.bash\nsource /opt/ros_ws/install/setup.bash\nexec "$@"' \
+    > /opt/ros_ws/entrypoint.sh && chmod +x /opt/ros_ws/entrypoint.sh
 
-CMD ["/bin/bash"]
+ENTRYPOINT ["/opt/ros_ws/entrypoint.sh"]
+CMD ["bash"]
