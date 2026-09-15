@@ -107,9 +107,7 @@ RUN test -d /workspace/install && \
 # ---------------------------------------------------------------------------
 FROM ${BASE_IMAGE} AS runtime
 
-# ИСПРАВЛЕНО: ARG без дефолта — наследует значение из build-arg
 ARG ROS_DISTRO
-
 SHELL ["/bin/bash", "-c"]
 
 ENV ROS_DISTRO=${ROS_DISTRO}
@@ -117,16 +115,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /opt/ros_ws
 
-COPY --from=builder /workspace/install /workspace/install
+# Копируем install в стандартный путь ROS2-воркспейса
+COPY --from=builder /workspace/install /opt/ros_ws/install
 
-# Подтверждение наличия CUDA (пункт 4 ТЗ)
 RUN nvcc --version && echo "CUDA toolkit present"
 
-# Автозагрузка ROS2 окружения
 RUN echo 'source /opt/ros/${ROS_DISTRO}/setup.bash' >> /etc/bash.bashrc && \
-    echo 'source /workspace/install/setup.bash' >> /etc/bash.bashrc
+    echo 'source /opt/ros_ws/install/setup.bash' >> /etc/bash.bashrc
 
-ENV PATH="/workspace/install/bin:/opt/ros/${ROS_DISTRO}/bin:${PATH}" \
-    LD_LIBRARY_PATH="/workspace/install/lib:/opt/ros/${ROS_DISTRO}/lib:${LD_LIBRARY_PATH}"
+ENV PATH="/opt/ros_ws/install/bin:/opt/ros/${ROS_DISTRO}/bin:${PATH}" \
+    LD_LIBRARY_PATH="/opt/ros_ws/install/lib:/opt/ros/${ROS_DISTRO}/lib:${LD_LIBRARY_PATH}"
 
 CMD ["/bin/bash"]
