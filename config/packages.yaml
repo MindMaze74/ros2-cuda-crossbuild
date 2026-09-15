@@ -1,0 +1,23 @@
+# Список ROS2-пакетов для автоматической сборки.
+# Добавление нового пакета — одна запись в массиве packages.
+#
+# Поля:
+#   name         — имя пакета (используется в тегах и как имя папки в /ros2_ws/src)
+#   repo         — Git URL репозитория
+#   branch       — ветка
+#   package_name — имя пакета внутри репозитория (может отличаться от name)
+#   ros_distro   — дистрибутив ROS2 (humble для Ubuntu 22.04, jazzy для Ubuntu 24.04)
+#   cuda_arch    — CUDA_ARCHITECTURES для каждой платформы
+#   cmake_args   — дополнительные флаги CMake
+
+packages:
+  - name: fastlio2
+    repo: https://github.com/ruiqichao/FAST_LIO2_GPU.git
+    branch: main
+    package_name: fast_lio
+    ros_distro: humble
+    cuda_arch:
+      x86: "86"
+      agx: "87"
+      nano: "87"
+    cmake_args: "-DCMAKE_BUILD_TYPE=Release -DFASTLIO_USE_CUDA=ON -DBUILD_TESTING=OFF"

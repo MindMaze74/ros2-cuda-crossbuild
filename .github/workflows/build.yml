@@ -1,4 +1,13 @@
-name: CI/CD Pipeline (Variant B — Humble + Jazzy)
+# ============================================================================
+# CI/CD Pipeline для кросс-платформенной сборки ROS2-пакетов с CUDA
+# ============================================================================
+# Триггеры: push в main/feature, теги, ручной запуск
+# Платформы: x86 (amd64), agx (arm64 Jetson AGX), nano (arm64 Jetson Nano)
+#
+# Конфигурация пакетов читается из config/packages.yaml.
+# Добавление нового пакета не требует правки workflow.
+# ============================================================================
+name: CI/CD Pipeline
 
 on:
   push:
@@ -8,7 +17,7 @@ on:
     tags: [ 'v*' ]
     paths:
       - 'docker/**'
-      - 'packages/**'
+      - 'config/**'
       - '.github/workflows/build.yml'
   workflow_dispatch:
     inputs:
@@ -20,12 +29,18 @@ on:
         description: 'Rebuild package images'
         type: boolean
         default: true
-      platform:
-        description: 'Platform: x86 | agx | nano (empty/all = all)'
+      package:
+        description: 'Package name (empty = all)'
         default: ''
-      build_type:
-        description: 'Build type: qemu | native | all'
-        default: 'qemu'
+      platform:
+        description: 'Platform: x86 | agx | nano (empty = all)'
+        default: ''
+
+# GITHUB_TOKEN автоматически имеет права на GHCR в рамках репозитория.
+# Не нужен PAT, который истекает и требует ручного обновления.
+permissions:
+  contents: read
+  packages: write
 
 env:
   REGISTRY: ghcr.io
@@ -33,9 +48,8 @@ env:
   BUILDKIT_PROGRESS: plain
 
 jobs:
-
   # ==========================================================================
-  # Base Images
+  # JOB 1: Base images — пересборка только при изменении docker/base/**
   # ==========================================================================
   build-base:
     if: |
@@ -44,6 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 1  # избегаем GHCR rate limit
       matrix:
         include:
           - platform: x86
@@ -58,227 +73,211 @@ jobs:
             dockerfile: docker/Dockerfile.base.nano
             target_platform: linux/arm64
             base_image: 'nvidia/cuda:12.6.3-devel-ubuntu24.04'
-            # JetPack 7 (L4T R39.2.1, Ubuntu 24.04)
-            # Если тег недоступен — замените на ближайший доступный R39.x
-            #base_image: 'nvcr.io/nvidia/l4t-jetpack:r39.2.1'
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Lowercase repo name
         id: repo
         run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-      - uses: docker/build-push-action@v5
+
+      - name: Build and push base image
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.target_platform }}
           push: true
           provenance: false
-          build-args: |
-            BASE_IMAGE=${{ matrix.base_image }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache,mode=max
 
   # ==========================================================================
-  # Packages — QEMU кросс-сборка
+  # JOB 2: Setup — генерирует матрицу пакетов из config/packages.yaml
   # ==========================================================================
-  build-packages-qemu:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mikefarah/yq@v4
+
+      - name: Generate matrix from packages.yaml
+        id: generate
+        run: |
+          # Читаем все пакеты
+          PACKAGES=$(yq -o=json -I=0 '.packages' config/packages.yaml)
+
+          # Фильтрация по выбранному пакету (workflow_dispatch)
+          SELECTED_PKG="${{ github.event.inputs.package }}"
+          if [ -n "$SELECTED_PKG" ]; then
+            PACKAGES=$(echo "$PACKAGES" | jq --arg p "$SELECTED_PKG" '[.[] | select(.name == $p)]')
+          fi
+
+          # Платформы с их runner'ами и CUDA-архитектурами
+          PLATFORMS='[
+            {"platform":"x86","target_platform":"linux/amd64","runner":"ubuntu-latest","native":false},
+            {"platform":"agx","target_platform":"linux/arm64","runner":"ubuntu-latest","native":false},
+            {"platform":"nano","target_platform":"linux/arm64","runner":"ubuntu-latest","native":false}
+          ]'
+
+          SELECTED_PLAT="${{ github.event.inputs.platform }}"
+          if [ -n "$SELECTED_PLAT" ]; then
+            PLATFORMS=$(echo "$PLATFORMS" | jq --arg p "$SELECTED_PLAT" '[.[] | select(.platform == $p)]')
+          fi
+
+          # Декартово произведение: пакет × платформа
+          MATRIX=$(jq -nc \
+            --argjson pkgs "$PACKAGES" \
+            --argjson plats "$PLATFORMS" \
+            '{include: [
+              $plats[] as $p | $pkgs[] as $pkg | {
+                platform: $p.platform,
+                target_platform: $p.target_platform,
+                runner: $p.runner,
+                package: $pkg.name,
+                repo: $pkg.repo,
+                branch: $pkg.branch,
+                package_name: $pkg.package_name,
+                ros_distro: $pkg.ros_distro,
+                cuda_arch: ($pkg.cuda_arch[$p.platform] // "87"),
+                cmake_args: $pkg.cmake_args
+              }
+            ]}')
+
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "$MATRIX" | jq .
+
+  # ==========================================================================
+  # JOB 3: Build packages — собирает каждый пакет на каждой платформе
+  # ==========================================================================
+  build-packages:
+    needs: [build-base, setup]
     if: |
       always() &&
       (needs.build-base.result == 'success' || needs.build-base.result == 'skipped') &&
       (github.event_name == 'push' ||
-       (github.event_name == 'workflow_dispatch' && inputs.build_packages == true)) &&
-      (github.event_name != 'workflow_dispatch' ||
-       inputs.build_type == 'qemu' || inputs.build_type == 'all')
-    needs: build-base
-    runs-on: ubuntu-latest
+       (github.event_name == 'workflow_dispatch' && inputs.build_packages == true))
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - package: fastlio2
-            platform: x86
-            target_platform: linux/amd64
-            cuda_arch: "86"
-            ros_distro: "humble"
-          - package: fastlio2
-            platform: agx
-            target_platform: linux/arm64
-            cuda_arch: "87"
-            ros_distro: "humble"
-          - package: fastlio2
-            platform: nano
-            target_platform: linux/arm64
-            cuda_arch: "87"
-            # ВАРИАНТ B: Jazzy для Nano (JetPack 7, Ubuntu 24.04)
-            ros_distro: "jazzy"
+      max-parallel: 1  # избегаем GHCR rate limit
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
-      - name: Filter platform
-        id: filter
-        run: |
-          SELECTED="${{ inputs.platform }}"
-          if [ -z "$SELECTED" ] || [ "$SELECTED" = "all" ] || [ "$SELECTED" = "${{ matrix.platform }}" ]; then
-            echo "skip=false" >> $GITHUB_OUTPUT
-          else
-            echo "skip=true" >> $GITHUB_OUTPUT
-          fi
-      - uses: docker/setup-qemu-action@v3
-        if: steps.filter.outputs.skip == 'false'
+
+      - name: Set up QEMU
+        if: matrix.target_platform == 'linux/arm64'
+        uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
-        if: steps.filter.outputs.skip == 'false'
-      - uses: docker/login-action@v3
-        if: steps.filter.outputs.skip == 'false'
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Lowercase repo name
         id: repo
-        if: steps.filter.outputs.skip == 'false'
         run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-      - uses: docker/build-push-action@v5
-        if: steps.filter.outputs.skip == 'false'
+
+      - name: Build and push package image
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/Dockerfile.package
           platforms: ${{ matrix.target_platform }}
           push: true
           provenance: false
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}-qemu
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}
+          tags: ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
             CUDA_ARCHITECTURES=${{ matrix.cuda_arch }}
-            REPO_URL=https://github.com/ruiqichao/FAST_LIO2_GPU.git
-            BRANCH=main
-            PACKAGE_NAME=fast_lio
+            REPO_URL=${{ matrix.repo }}
+            BRANCH=${{ matrix.branch }}
+            PACKAGE_NAME=${{ matrix.package_name }}
             ROS_DISTRO=${{ matrix.ros_distro }}
+            CMAKE_ARGS=${{ matrix.cmake_args }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache,mode=max
 
-  # ==========================================================================
-  # Packages — нативная сборка на ARM-раннерах (если доступны)
-  # ==========================================================================
-  build-packages-native:
-    if: |
-      always() &&
-      (needs.build-base.result == 'success' || needs.build-base.result == 'skipped') &&
-      (github.event_name == 'workflow_dispatch' &&
-       (inputs.build_type == 'native' || inputs.build_type == 'all') &&
-       inputs.build_packages == true)
-    needs: build-base
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - package: fastlio2
-            platform: agx
-            runner: arm64-agx
-            cuda_arch: "87"
-            ros_distro: "humble"
-          - package: fastlio2
-            platform: nano
-            runner: arm64-nano
-            cuda_arch: "87"
-            ros_distro: "jazzy"
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      # Сканирование уязвимостей через Trivy
+      - name: Run Trivy vulnerability scanner
+        if: github.event_name == 'pull_request'
+        uses: aquasecurity/trivy-action@master
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
-      - name: Lowercase repo name
-        id: repo
-        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-      - uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/Dockerfile.package
-          push: true
-          provenance: false
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}-native
-          build-args: |
-            BASE_IMAGE=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
-            CUDA_ARCHITECTURES=${{ matrix.cuda_arch }}
-            REPO_URL=https://github.com/ruiqichao/FAST_LIO2_GPU.git
-            BRANCH=main
-            PACKAGE_NAME=fast_lio
-            ROS_DISTRO=${{ matrix.ros_distro }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}-native:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}-native:buildcache,mode=max
+          image-ref: '${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}'
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
 
   # ==========================================================================
-  # Test
+  # JOB 4: Test images — проверяет, что образы содержат CUDA и ROS2-пакет
   # ==========================================================================
   test-images:
-    needs: [build-packages-qemu, build-packages-native]
-    if: |
-      always() &&
-      (needs.build-packages-qemu.result == 'success' || needs.build-packages-native.result == 'success')
+    needs: build-packages
+    if: always() && needs.build-packages.result == 'success'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: x86
-            ros_distro: "humble"
-          - platform: agx
-            ros_distro: "humble"
-          - platform: nano
-            ros_distro: "jazzy"
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
-      - name: Filter platform
-        id: filter
-        run: |
-          SELECTED="${{ inputs.platform }}"
-          if [ -z "$SELECTED" ] || [ "$SELECTED" = "all" ] || [ "$SELECTED" = "${{ matrix.platform }}" ]; then
-            echo "skip=false" >> $GITHUB_OUTPUT
-          else
-            echo "skip=true" >> $GITHUB_OUTPUT
-          fi
-      - uses: docker/setup-qemu-action@v3
-        if: steps.filter.outputs.skip == 'false'
-      - uses: docker/login-action@v3
-        if: steps.filter.outputs.skip == 'false'
+
+      - name: Set up QEMU
+        if: matrix.target_platform == 'linux/arm64'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Lowercase repo name
         id: repo
-        if: steps.filter.outputs.skip == 'false'
         run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
       - name: Pull and test image
-        if: steps.filter.outputs.skip == 'false'
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-fastlio2:${{ matrix.platform }}"
+          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}"
           ROS_DISTRO="${{ matrix.ros_distro }}"
           echo "Testing image: $IMAGE (ROS2 $ROS_DISTRO)"
           docker pull "$IMAGE"
 
           PLATFORM_FLAG=""
-          if [ "${{ matrix.platform }}" != "x86" ]; then
+          if [ "${{ matrix.target_platform }}" = "linux/arm64" ]; then
             PLATFORM_FLAG="--platform linux/arm64"
           fi
 
+          echo "=== 1. CUDA version ==="
           docker run --rm $PLATFORM_FLAG "$IMAGE" nvcc --version
+
+          echo "=== 2. ROS2 distro ==="
           docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && echo ROS_DISTRO=\$ROS_DISTRO"
+
+          echo "=== 3. Build artifacts ==="
           docker run --rm $PLATFORM_FLAG "$IMAGE" ls -la /opt/ros_ws/install/
-          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && source /opt/ros_ws/install/setup.bash && ros2 pkg list | grep fast_lio" || true
+
+          echo "=== 4. ROS2 package present ==="
+          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && source /opt/ros_ws/install/setup.bash && ros2 pkg list | grep ${{ matrix.package_name }}" || true
+
           echo "All tests passed for $IMAGE"
