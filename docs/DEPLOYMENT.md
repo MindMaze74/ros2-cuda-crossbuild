@@ -26,8 +26,8 @@ cd ros2-cuda-crossbuild
 
 **Settings → Actions → General → Workflow permissions:**
 
-- ✅ **Read and write permissions** — включено.
-- ✅ **Allow GitHub Actions to create and approve pull requests** — включено.
+- **Read and write permissions** — включено.
+- **Allow GitHub Actions to create and approve pull requests** — включено.
 
 **Секреты не нужны.** `GITHUB_TOKEN` со скоупом `packages: write` достаточен
 для пуша в GHCR. PAT (`GHCR_PAT`) не требуется.
@@ -39,8 +39,8 @@ cd ros2-cuda-crossbuild
 | Поле | Значение |
 |---|---|
 | Branch | `main` |
-| Rebuild base images | ✅ true (первый раз) |
-| Rebuild package images | ✅ true |
+| Rebuild base images | true (первый раз) |
+| Rebuild package images | true |
 | Build native ARM | ☐ false (нет раннера) |
 | Package | `all` |
 | Platform | пусто |
@@ -191,7 +191,7 @@ sudo ./svc.sh status
 
 | Поле | Значение |
 |---|---|
-| Build native ARM | ✅ true |
+| Build native ARM | true |
 | Package | `fastlio2` |
 | Platform | `agx` |
 
@@ -224,7 +224,7 @@ cd ~/actions-runner
 3. **Actions → Run workflow** с `build_base: true`.
 4. После успеха — `build_packages: true` (запинится новый digest).
 
-⚠️ **Внимание:** при смене базового образа digest изменится, все пакеты
+**Внимание:** при смене базового образа digest изменится, все пакеты
 пересоберутся с нуля. Кеш `type=registry` не поможет — слои другие.
 
 ---
