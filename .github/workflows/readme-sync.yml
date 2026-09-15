@@ -5,6 +5,9 @@
 #
 # При изменении packages.yaml workflow запускает scripts/render-readme.sh
 # и открывает PR с обновлённым README. Если изменений нет — PR не создаётся.
+#
+# Скрипт использует Python3 + PyYAML вместо yq — так одинаково работает
+# локально и в CI, не зависит от версии yq и его запуска через Docker action.
 
 name: README Sync
 
@@ -36,7 +39,13 @@ jobs:
         with:
           ref: ${{ github.ref }}
 
-      - uses: mikefarah/yq@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
 
       - name: Render README section
         run: |
