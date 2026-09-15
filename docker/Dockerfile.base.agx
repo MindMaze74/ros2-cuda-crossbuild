@@ -1,14 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # ============================================================================
-# AGX Orin — JetPack 6.2.2 (L4T R36.5.0, ядро 5.15.185-tegra)
-# ============================================================================
-# ПРИМЕЧАНИЕ: официального образа l4t-jetpack:r36.5.0 в NGC пока нет.
-# Используем r36.4.0 — последний доступный, совместимый с JetPack 6.2.2
-# по ключевым библиотекам CUDA/cuDNN. Для 100% соответствия требуется
-# self-hosted Jetson с предустановленным JetPack 6.2.2.
-#
-# ROS2 Humble + pcl_ros устанавливаются ПОВЕРХ официального L4T — это даёт
-# полное соответствие по L4T R36.4.0 и полноценный ROS2-стек.
+# AGX Orin — JetPack 6.2.2 (L4T R36.4.0)
+# ROS2 Humble устанавливается ПОВЕРХ официального L4T
 # ============================================================================
 
 ARG BASE_IMAGE
@@ -19,9 +12,7 @@ ENV ROS_DISTRO=humble
 ENV CUDA_ARCHITECTURES="87"
 
 # ---------------------------------------------------------------------------
-# 1. Workaround QEMU: подменяем ldconfig заглушкой.
-#    Под ARM64-эмуляцией dpkg triggers вызывают /sbin/ldconfig, который
-#    падает с segfault. Заглушка обходит это.
+# 1. Workaround QEMU: подменяем ldconfig заглушкой
 # ---------------------------------------------------------------------------
 RUN if [ -x /sbin/ldconfig ] && [ ! -e /sbin/ldconfig.real ]; then \
         cp /sbin/ldconfig /sbin/ldconfig.real; \
@@ -42,7 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
-# 3. ROS2 Humble + pcl_ros + build-tools + PCL/Eigen
+# 3. ROS2 Humble + pcl_ros + build-tools
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-ros-base \
@@ -60,7 +51,7 @@ RUN rosdep init 2>/dev/null || true && \
     rosdep update --rosdistro ${ROS_DISTRO}
 
 # ---------------------------------------------------------------------------
-# 4. Livox-SDK2 (для FAST-LIO2)
+# 4. Livox-SDK2
 # ---------------------------------------------------------------------------
 RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 \
     && cd /tmp/Livox-SDK2 \
@@ -71,7 +62,7 @@ RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-S
     && rm -rf /tmp/Livox-SDK2
 
 # ---------------------------------------------------------------------------
-# 5. Восстановить настоящий ldconfig для runtime на реальном Jetson
+# 5. Восстановить настоящий ldconfig
 # ---------------------------------------------------------------------------
 RUN if [ -e /sbin/ldconfig.real ]; then \
         mv /sbin/ldconfig.real /sbin/ldconfig && \
