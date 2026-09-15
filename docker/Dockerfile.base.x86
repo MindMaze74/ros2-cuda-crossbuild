@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=humble
 ENV CUDA_ARCHITECTURES="86"
 
-# Системные зависимости
+# Системные зависимости + pip
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -16,7 +16,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         build-essential \
         cmake \
         pkg-config \
+        python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# ⚠️ КРИТИЧНО: обновляем CMake до 3.28+ через pip
+# CMake 3.22 (из apt Ubuntu 22.04) не умеет пробрасывать CMAKE_CUDA_STANDARD в nvcc.
+# Из-за этого nvcc использует C++14 и падает на std::is_same_v / std::optional / std::variant
+# в заголовках ROS2 Humble.
+RUN pip3 install --no-cache-dir "cmake==3.28.3" && \
+    which cmake && cmake --version
 
 # ROS2 Humble + pcl_ros + pcl_conversions
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
