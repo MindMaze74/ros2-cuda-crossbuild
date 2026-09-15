@@ -33,10 +33,12 @@ env:
 jobs:
 
   # ==========================================================================
-  # JOB 1: Base images — пересобираются только если изменён docker/Dockerfile.base.*
+  # JOB 1: Base — по умолчанию пропускается при workflow_dispatch
   # ==========================================================================
   build-base:
-    if: github.event_name == 'push' || inputs.build_base == true
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.build_base == true)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -53,15 +55,9 @@ jobs:
             target_platform: linux/arm64
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -71,29 +67,29 @@ jobs:
         id: repo
         run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
-      - name: Build and push base image
-        uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v5
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.target_platform }}
           push: true
           provenance: false
-          # ИСПРАВЛЕНО: no-cache убран → работает registry cache
           tags: |
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache,mode=max
 
   # ==========================================================================
-  # JOB 2: Packages — используют base из GHCR
+  # JOB 2: Packages — не зависит от build-base жёстко
   # ==========================================================================
   build-packages:
-    needs: build-base
+    # НЕ пропускать, если base был пропущен
     if: |
       always() &&
       (needs.build-base.result == 'success' || needs.build-base.result == 'skipped') &&
-      (github.event_name == 'push' || inputs.build_packages == true)
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.build_packages == true))
+    needs: build-base
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -112,47 +108,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Filter by platform (workflow_dispatch)
+      # --- Пропустить платформы, которые не выбраны ---
+      - name: Filter platform
         id: filter
         run: |
           SELECTED="${{ inputs.platform }}"
           if [ -n "$SELECTED" ] && [ "$SELECTED" != "${{ matrix.platform }}" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
+            echo "⏭ Skipping platform ${{ matrix.platform }} (selected: $SELECTED)"
           else
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Set up QEMU
+      - uses: docker/setup-qemu-action@v3
         if: steps.filter.outputs.skip == 'false'
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
+      - uses: docker/setup-buildx-action@v3
         if: steps.filter.outputs.skip == 'false'
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
+      - uses: docker/login-action@v3
         if: steps.filter.outputs.skip == 'false'
-        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PAT }}
 
       - name: Lowercase repo name
-        if: steps.filter.outputs.skip == 'false'
         id: repo
+        if: steps.filter.outputs.skip == 'false'
         run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
-      - name: Build and push package image
+      - uses: docker/build-push-action@v5
         if: steps.filter.outputs.skip == 'false'
-        uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/Dockerfile.package
           platforms: ${{ matrix.target_platform }}
           push: true
           provenance: false
-          # ИСПРАВЛЕНО: no-cache убран → быстрые повторные сборки
           tags: |
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}
           build-args: |
@@ -165,7 +156,7 @@ jobs:
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache,mode=max
 
   # ==========================================================================
-  # JOB 3: Тесты — после успешной сборки
+  # JOB 3: Test — только те платформы, что реально собраны
   # ==========================================================================
   test-images:
     needs: build-packages
@@ -178,11 +169,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      # --- Пропустить платформы, которые не выбраны ---
+      - name: Filter platform
+        id: filter
+        run: |
+          SELECTED="${{ inputs.platform }}"
+          if [ -n "$SELECTED" ] && [ "$SELECTED" != "${{ matrix.platform }}" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "⏭ Skipping test for ${{ matrix.platform }}"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - uses: docker/setup-qemu-action@v3
+        if: steps.filter.outputs.skip == 'false'
+      - uses: docker/login-action@v3
+        if: steps.filter.outputs.skip == 'false'
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -190,27 +192,34 @@ jobs:
 
       - name: Lowercase repo name
         id: repo
+        if: steps.filter.outputs.skip == 'false'
         run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
       - name: Pull and test image
+        if: steps.filter.outputs.skip == 'false'
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-fastlio2:${{ matrix.platform }}"
           echo "Testing image: $IMAGE"
           docker pull "$IMAGE"
 
+          PLATFORM_FLAG=""
+          if [ "${{ matrix.platform }}" != "x86" ]; then
+            PLATFORM_FLAG="--platform linux/arm64"
+          fi
+
           echo "=== 1. CUDA version ==="
-          docker run --rm "$IMAGE" nvcc --version
+          docker run --rm $PLATFORM_FLAG "$IMAGE" nvcc --version
 
           echo "=== 2. ROS2 distro ==="
-          docker run --rm "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && echo ROS_DISTRO=\$ROS_DISTRO"
+          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && echo ROS_DISTRO=\$ROS_DISTRO"
 
           echo "=== 3. Build artifacts ==="
-          docker run --rm "$IMAGE" ls -la /workspace/install/
+          docker run --rm $PLATFORM_FLAG "$IMAGE" ls -la /workspace/install/
 
           echo "=== 4. ROS2 packages ==="
-          docker run --rm "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && source /workspace/install/setup.bash && ros2 pkg list" || true
+          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && source /workspace/install/setup.bash && ros2 pkg list" || true
 
           echo "=== 5. CUDA libraries ==="
-          docker run --rm "$IMAGE" bash -c "ldconfig -p | grep -i cuda | head -5" || true
+          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "ldconfig -p | grep -i cuda | head -5" || true
 
           echo "✅ All tests passed for $IMAGE"
