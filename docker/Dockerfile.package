@@ -26,25 +26,25 @@ RUN git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${PACKAGE_NAME}" && 
     git submodule update --init --recursive --depth 1 || \
     (echo "⚠️ submodules not found, continuing" && true)
 
-# Клонирование livox_ros_driver2 (опционально, может отсутствовать)
+# Клонирование livox_ros_driver2 (опционально)
 RUN git clone --depth 1 https://github.com/Livox-SDK/livox_ros_driver2.git \
     livox_ros_driver2 || true
 
 # Установка зависимостей через rosdep
-# pcl_ros установлен в базовом образе, поэтому skip
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     source /opt/ros/${ROS_DISTRO}/setup.bash && \
     rosdep install --from-paths . --ignore-src -y \
       --skip-keys=livox_ros_driver2,pcl_ros || true
 
-# Сборка
+# Сборка — build в cache, install в ФС образа
 WORKDIR /workspace
 RUN --mount=type=cache,target=/workspace/build \
-    --mount=type=cache,target=/workspace/install \
     source /opt/ros/${ROS_DISTRO}/setup.bash && \
     colcon build \
       --packages-select ${PACKAGE_NAME} \
+      --build-base /workspace/build \
+      --install-base /workspace/install \
       --cmake-args \
         -DCMAKE_BUILD_TYPE=Release \
         -DFASTLIO_USE_CUDA=ON \
@@ -53,13 +53,23 @@ RUN --mount=type=cache,target=/workspace/build \
 
 RUN nvcc --version
 
+# Проверка, что install действительно создан
+RUN test -d /workspace/install && \
+    test -f /workspace/install/setup.bash && \
+    echo "✅ install artifacts present" || \
+    (echo "❌ install artifacts missing" && ls -la /workspace/ && exit 1)
+
 # Финальный образ
 FROM ${BASE_IMAGE}
 ENV ROS_DISTRO=humble
 WORKDIR /opt/ros_ws
+
 COPY --from=builder /workspace/install /workspace/install
+
 RUN echo 'source /opt/ros/${ROS_DISTRO}/setup.bash' >> /etc/bash.bashrc && \
     echo 'source /workspace/install/setup.bash' >> /etc/bash.bashrc
+
 ENV PATH="/workspace/install/bin:/opt/ros/${ROS_DISTRO}/bin:${PATH}" \
     LD_LIBRARY_PATH="/workspace/install/lib:/opt/ros/${ROS_DISTRO}/lib:${LD_LIBRARY_PATH}"
+
 CMD ["/bin/bash"]
