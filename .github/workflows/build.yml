@@ -2,7 +2,7 @@ name: CI/CD Pipeline - ROS2 FastLIO Build
 
 on:
   push:
-    branches: [ "main", "develop" ]
+    branches: [ "feature/jetpack-versions" ]
     tags: [ "v*" ]
   pull_request:
     branches: [ "main" ]
