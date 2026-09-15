@@ -1,64 +1,51 @@
-# syntax=docker/dockerfile:1.7
-# ============================================================================
-# Orin Nano — JetPack 7 (Ubuntu 24.04)
-# ВАРИАНТ B: ROS2 Jazzy
-# ============================================================================
-# l4t-jetpack:r39.x НЕ существует в NGC.
-# Используем nvidia/cuda:12.6.3-devel-ubuntu24.04 (multi-arch: arm64 + x86_64)
-# https://hub.docker.com/r/nvidia/cuda — поддерживает linux/arm64
-# ============================================================================
-
+# Базовый образ ROS2 Jazzy + CUDA для Jetson Orin Nano.
+# Ubuntu 24.04 не поддерживает Humble, поэтому используется Jazzy.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-# ВАЖНО: Jazzy для Ubuntu 24.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=jazzy
+ENV CUDA_ARCHITECTURES="87"
 
-# Workaround QEMU: ldconfig заглушка
+# Заглушка ldconfig для обхода QEMU
 RUN if [ -x /sbin/ldconfig ] && [ ! -e /sbin/ldconfig.real ]; then \
         cp /sbin/ldconfig /sbin/ldconfig.real; \
     fi && \
     printf '#!/bin/sh\nexit 0\n' > /sbin/ldconfig && \
     chmod +x /sbin/ldconfig
 
-# Репозиторий ROS2 Jazzy (Ubuntu 24.04 = noble)
+# Репозиторий ROS2
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl gnupg2 lsb-release ca-certificates software-properties-common \
-    && add-apt-repository universe \
-    && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-        -o /usr/share/keyrings/ros-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+        curl gnupg2 lsb-release ca-certificates && \
+    curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+        -o /usr/share/keyrings/ros-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) \
+        signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
         http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
-        > /etc/apt/sources.list.d/ros2.list \
-    && rm -rf /var/lib/apt/lists/*
+        > /etc/apt/sources.list.d/ros2.list && \
+    rm -rf /var/lib/apt/lists/*
 
-# ROS2 Jazzy + зависимости
-# Примечание: имена пакетов в Jazzy могут отличаться от Humble.
-# Если пакет недоступен — закомментируйте и соберите из исходников.
+# ROS2 Jazzy + pcl_ros + инструменты
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-ros-base \
         ros-${ROS_DISTRO}-pcl-ros \
         ros-${ROS_DISTRO}-pcl-conversions \
         python3-colcon-common-extensions \
-        python3-rosdep \
-        python3-vcstool \
-        python3-pip \
+        python3-rosdep python3-vcstool \
         build-essential cmake git wget \
         libpcl-dev libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN rosdep init 2>/dev/null || true && \
-    rosdep update --rosdistro ${ROS_DISTRO}
+RUN rosdep init 2>/dev/null || true && rosdep update
 
 # Livox-SDK2
-RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 \
-    && cd /tmp/Livox-SDK2 && mkdir build && cd build \
-    && cmake .. -DCMAKE_BUILD_TYPE=Release \
-    && make -j$(nproc) && make install \
-    && rm -rf /tmp/Livox-SDK2
+RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 && \
+    cd /tmp/Livox-SDK2 && mkdir build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release && \
+    make -j$(nproc) && make install && \
+    rm -rf /tmp/Livox-SDK2
 
-# Восстановить ldconfig
+# Восстанавливаем ldconfig
 RUN if [ -e /sbin/ldconfig.real ]; then \
         mv /sbin/ldconfig.real /sbin/ldconfig && chmod +x /sbin/ldconfig; \
     fi

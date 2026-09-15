@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
-# ============================================================================
-# Добавить новый пакет в config/packages.yaml
-# ============================================================================
+# Добавить новый пакет в config/packages.yaml.
 # Использование:
 #   ./scripts/add_package.sh <name> <repo_url> [branch] [package_name] [ros_distro]
-#
-# Пример:
-#   ./scripts/add_package.sh my_slam https://github.com/org/my_slam.git main my_slam humble
-# ============================================================================
 set -euo pipefail
 
 NAME="${1:-}"

@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
-# ============================================================================
-# Локальная сборка Docker-образа пакета
-# ============================================================================
+# Локальная сборка Docker-образа пакета.
 # Использование: ./scripts/build-local.sh <package> <platform>
-# Примеры:
-#   ./scripts/build-local.sh fastlio2 amd64
-#   ./scripts/build-local.sh fastlio2 arm64
-# ============================================================================
 set -euo pipefail
 
 PACKAGE="${1:-}"
@@ -36,6 +30,7 @@ REPO=$(yq -r ".packages[] | select(.name == \"$PACKAGE\") | .repo" config/packag
 BRANCH=$(yq -r ".packages[] | select(.name == \"$PACKAGE\") | .branch" config/packages.yaml)
 PKG_NAME=$(yq -r ".packages[] | select(.name == \"$PACKAGE\") | .package_name" config/packages.yaml)
 ROS_DISTRO=$(yq -r ".packages[] | select(.name == \"$PACKAGE\") | .ros_distro" config/packages.yaml)
+CMAKE_ARGS=$(yq -r ".packages[] | select(.name == \"$PACKAGE\") | .cmake_args" config/packages.yaml)
 
 docker buildx build \
     --platform "$DOCKER_PLATFORM" \
@@ -44,6 +39,7 @@ docker buildx build \
     --build-arg BRANCH="$BRANCH" \
     --build-arg PACKAGE_NAME="$PKG_NAME" \
     --build-arg ROS_DISTRO="$ROS_DISTRO" \
+    --build-arg CMAKE_ARGS="$CMAKE_ARGS" \
     -t "ros2-package-$PACKAGE:$PLATFORM" \
     -f docker/Dockerfile.package \
     --load \

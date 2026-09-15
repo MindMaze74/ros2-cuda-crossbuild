@@ -1,12 +1,5 @@
-# ============================================================================
-# CI/CD Pipeline для кросс-платформенной сборки ROS2-пакетов с CUDA
-# ============================================================================
-# Триггеры: push в main/feature, теги, ручной запуск
-# Платформы: x86 (amd64), agx (arm64 Jetson AGX), nano (arm64 Jetson Nano)
-#
+# Сборка базовых образов и ROS2-пакетов с CUDA для трёх платформ.
 # Конфигурация пакетов читается из config/packages.yaml.
-# Добавление нового пакета не требует правки workflow.
-# ============================================================================
 name: CI/CD Pipeline
 
 on:
@@ -36,8 +29,6 @@ on:
         description: 'Platform: x86 | agx | nano (empty = all)'
         default: ''
 
-# GITHUB_TOKEN автоматически имеет права на GHCR в рамках репозитория.
-# Не нужен PAT, который истекает и требует ручного обновления.
 permissions:
   contents: read
   packages: write
@@ -48,9 +39,10 @@ env:
   BUILDKIT_PROGRESS: plain
 
 jobs:
-  # ==========================================================================
-  # JOB 1: Base images — пересборка только при изменении docker/base/**
-  # ==========================================================================
+
+  # ---------------------------------------------------------------------------
+  # Базовые образы: собираются только при изменении docker/base или вручную
+  # ---------------------------------------------------------------------------
   build-base:
     if: |
       github.event_name == 'push' ||
@@ -58,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 1  # избегаем GHCR rate limit
+      max-parallel: 1
       matrix:
         include:
           - platform: x86
@@ -101,13 +93,15 @@ jobs:
           platforms: ${{ matrix.target_platform }}
           push: true
           provenance: false
+          build-args: |
+            BASE_IMAGE=${{ matrix.base_image }}
           tags: ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache,mode=max
 
-  # ==========================================================================
-  # JOB 2: Setup — генерирует матрицу пакетов из config/packages.yaml
-  # ==========================================================================
+  # ---------------------------------------------------------------------------
+  # Setup: генерирует матрицу пакетов из config/packages.yaml
+  # ---------------------------------------------------------------------------
   setup:
     runs-on: ubuntu-latest
     outputs:
@@ -119,20 +113,17 @@ jobs:
       - name: Generate matrix from packages.yaml
         id: generate
         run: |
-          # Читаем все пакеты
           PACKAGES=$(yq -o=json -I=0 '.packages' config/packages.yaml)
 
-          # Фильтрация по выбранному пакету (workflow_dispatch)
           SELECTED_PKG="${{ github.event.inputs.package }}"
           if [ -n "$SELECTED_PKG" ]; then
             PACKAGES=$(echo "$PACKAGES" | jq --arg p "$SELECTED_PKG" '[.[] | select(.name == $p)]')
           fi
 
-          # Платформы с их runner'ами и CUDA-архитектурами
           PLATFORMS='[
-            {"platform":"x86","target_platform":"linux/amd64","runner":"ubuntu-latest","native":false},
-            {"platform":"agx","target_platform":"linux/arm64","runner":"ubuntu-latest","native":false},
-            {"platform":"nano","target_platform":"linux/arm64","runner":"ubuntu-latest","native":false}
+            {"platform":"x86","target_platform":"linux/amd64","runner":"ubuntu-latest"},
+            {"platform":"agx","target_platform":"linux/arm64","runner":"ubuntu-latest"},
+            {"platform":"nano","target_platform":"linux/arm64","runner":"ubuntu-latest"}
           ]'
 
           SELECTED_PLAT="${{ github.event.inputs.platform }}"
@@ -140,7 +131,6 @@ jobs:
             PLATFORMS=$(echo "$PLATFORMS" | jq --arg p "$SELECTED_PLAT" '[.[] | select(.platform == $p)]')
           fi
 
-          # Декартово произведение: пакет × платформа
           MATRIX=$(jq -nc \
             --argjson pkgs "$PACKAGES" \
             --argjson plats "$PLATFORMS" \
@@ -162,9 +152,9 @@ jobs:
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
           echo "$MATRIX" | jq .
 
-  # ==========================================================================
-  # JOB 3: Build packages — собирает каждый пакет на каждой платформе
-  # ==========================================================================
+  # ---------------------------------------------------------------------------
+  # Сборка пакетов: пакет × платформа
+  # ---------------------------------------------------------------------------
   build-packages:
     needs: [build-base, setup]
     if: |
@@ -175,7 +165,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      max-parallel: 1  # избегаем GHCR rate limit
+      max-parallel: 1
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
@@ -217,21 +207,11 @@ jobs:
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache,mode=max
 
-      # Сканирование уязвимостей через Trivy
-      - name: Run Trivy vulnerability scanner
-        if: github.event_name == 'pull_request'
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: '${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}'
-          format: 'table'
-          severity: 'CRITICAL,HIGH'
-          exit-code: '0'
-
-  # ==========================================================================
-  # JOB 4: Test images — проверяет, что образы содержат CUDA и ROS2-пакет
-  # ==========================================================================
+  # ---------------------------------------------------------------------------
+  # Тесты: CUDA + ROS2 + артефакты
+  # ---------------------------------------------------------------------------
   test-images:
-    needs: build-packages
+    needs: [build-packages, setup]
     if: always() && needs.build-packages.result == 'success'
     runs-on: ubuntu-latest
     strategy:

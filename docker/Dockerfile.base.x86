@@ -1,44 +1,47 @@
-# syntax=docker/dockerfile:1.7
-# ============================================================================
-# x86_64 — CUDA 12.9.0 + Ubuntu 22.04 + ROS2 Humble
-# ============================================================================
-
+# Базовый образ ROS2 Humble + CUDA для x86_64.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=humble
+ENV CUDA_ARCHITECTURES="86"
 
+# Системные зависимости и инструменты сборки
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl gnupg2 lsb-release ca-certificates software-properties-common \
-    && add-apt-repository universe \
-    && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-        -o /usr/share/keyrings/ros-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
-        http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
-        > /etc/apt/sources.list.d/ros2.list \
+        wget gnupg2 lsb-release ca-certificates \
+        build-essential cmake git pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
+# Репозиторий ROS2
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+        -o /usr/share/keyrings/ros-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) \
+        signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+        http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
+        > /etc/apt/sources.list.d/ros2.list
+
+# ROS2 Humble + инструменты
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-ros-base \
         ros-${ROS_DISTRO}-pcl-ros \
         ros-${ROS_DISTRO}-pcl-conversions \
         python3-colcon-common-extensions \
-        python3-rosdep \
-        python3-vcstool \
-        python3-pip \
-        build-essential cmake git wget \
+        python3-rosdep python3-vcstool \
+    && rm -rf /var/lib/apt/lists/*
+
+# PCL, Eigen
+RUN apt-get update && apt-get install -y --no-install-recommends \
         libpcl-dev libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN rosdep init 2>/dev/null || true && \
-    rosdep update --rosdistro ${ROS_DISTRO}
+# Livox-SDK2
+RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 && \
+    cd /tmp/Livox-SDK2 && mkdir build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release && \
+    make -j$(nproc) && make install && \
+    rm -rf /tmp/Livox-SDK2
 
-RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 \
-    && cd /tmp/Livox-SDK2 && mkdir build && cd build \
-    && cmake .. -DCMAKE_BUILD_TYPE=Release \
-    && make -j$(nproc) && make install \
-    && rm -rf /tmp/Livox-SDK2
+RUN rosdep init 2>/dev/null || true && rosdep update
 
 WORKDIR /workspace
 ENV PATH="/opt/ros/${ROS_DISTRO}/bin:${PATH}"

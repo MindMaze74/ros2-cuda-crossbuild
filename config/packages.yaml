@@ -2,11 +2,11 @@
 # Добавление нового пакета — одна запись в массиве packages.
 #
 # Поля:
-#   name         — имя пакета (используется в тегах и как имя папки в /ros2_ws/src)
+#   name         — имя пакета (используется в тегах)
 #   repo         — Git URL репозитория
 #   branch       — ветка
-#   package_name — имя пакета внутри репозитория (может отличаться от name)
-#   ros_distro   — дистрибутив ROS2 (humble для Ubuntu 22.04, jazzy для Ubuntu 24.04)
+#   package_name — имя пакета внутри репозитория (для colcon --packages-select)
+#   ros_distro   — humble (Ubuntu 22.04) или jazzy (Ubuntu 24.04)
 #   cuda_arch    — CUDA_ARCHITECTURES для каждой платформы
 #   cmake_args   — дополнительные флаги CMake
 

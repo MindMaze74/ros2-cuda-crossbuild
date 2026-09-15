@@ -1,4 +1,5 @@
-# syntax=docker/dockerfile:1.7
+# Универсальный шаблон сборки ROS2-пакета с CUDA.
+# Поддерживает Humble и Jazzy через аргумент ROS_DISTRO.
 
 ARG BASE_IMAGE
 ARG CUDA_ARCHITECTURES
@@ -6,7 +7,11 @@ ARG REPO_URL
 ARG BRANCH=main
 ARG PACKAGE_NAME
 ARG ROS_DISTRO=humble
+ARG CMAKE_ARGS=""
 
+# ============================================================================
+# STAGE 1: Builder
+# ============================================================================
 FROM ${BASE_IMAGE} AS builder
 
 ARG CUDA_ARCHITECTURES
@@ -14,16 +19,17 @@ ARG REPO_URL
 ARG BRANCH
 ARG PACKAGE_NAME
 ARG ROS_DISTRO
+ARG CMAKE_ARGS
 
 SHELL ["/bin/bash", "-c"]
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES}
 ENV ROS_DISTRO=${ROS_DISTRO}
 ENV MAKEFLAGS="-j$(nproc)"
 
-# Ставим CMake 3.28 из репозитория Kitware, потому что CMake 3.22
-# из Ubuntu 22.04 не пробрасывает CMAKE_CUDA_STANDARD в nvcc
+# Ставим CMake 3.28+ из репозитория Kitware.
+# CMake 3.22 из Ubuntu 22.04 не пробрасывает CMAKE_CUDA_STANDARD в nvcc,
+# из-за чего nvcc компилирует .cu с C++14 и падает на заголовках ROS2.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         wget gpg ca-certificates lsb-release && \
@@ -35,31 +41,29 @@ RUN apt-get update && \
     apt-get update && \
     apt-get install -y --no-install-recommends cmake && \
     rm -rf /var/lib/apt/lists/* && \
-    which cmake && cmake --version
+    cmake --version
 
 WORKDIR /workspace/src
 
-# Клонируем пакет и его submodules (ikd-Tree нужен для FAST_LIO)
+# Клонируем пакет и submodules (ikd-Tree нужен для FAST-LIO)
 RUN git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${PACKAGE_NAME}" && \
     cd "${PACKAGE_NAME}" && \
     git submodule update --init --recursive --depth 1 || \
     (echo "submodules not found, continuing" && true)
 
-# livox_ros_driver2 — опциональная зависимость, если его нет, сборка продолжится
+# Опциональная зависимость FAST-LIO — если не склонируется, продолжаем
 RUN git clone --depth 1 https://github.com/Livox-SDK/livox_ros_driver2.git \
         livox_ros_driver2 || true
 
-# Ставим зависимости через rosdep. pcl_ros уже есть в базовом образе,
-# livox_ros_driver2 собираем как часть workspace
+# Устанавливаем зависимости через rosdep
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     source /opt/ros/${ROS_DISTRO}/setup.bash && \
     rosdep install --from-paths . --ignore-src -y \
         --skip-keys=livox_ros_driver2,pcl_ros || true
 
-# Собираем пакет через colcon. CMAKE_CUDA_STANDARD=17 работает только
-# с CMake 3.28+. Флаг -std=c++17 в CMAKE_CUDA_FLAGS не ставим, чтобы
-# не конфликтовал с CMake
+# Собираем пакет. CMAKE_CUDA_STANDARD=17 работает только с CMake 3.28+.
+# -std=c++17 в CMAKE_CUDA_FLAGS не передаём, чтобы не конфликтовал.
 WORKDIR /workspace
 RUN --mount=type=cache,target=/workspace/build \
     source /opt/ros/${ROS_DISTRO}/setup.bash && \
@@ -77,22 +81,20 @@ RUN --mount=type=cache,target=/workspace/build \
             -DCMAKE_CUDA_EXTENSIONS=OFF \
             -DCMAKE_CUDA_FLAGS="--expt-relaxed-constexpr --expt-extended-lambda" \
             -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
-            -DFASTLIO_USE_CUDA=ON \
-            -DBUILD_TESTING=OFF
+            ${CMAKE_ARGS}
 
-# Проверяем, что nvcc доступен
+# Проверки
 RUN nvcc --version
-
-# Проверяем, что install создался
 RUN test -d /workspace/install && \
     test -f /workspace/install/setup.bash && \
-    echo "install artifacts present" || \
-    (echo "install artifacts missing" && ls -la /workspace/ && exit 1)
+    echo "install artifacts present"
 
+# ============================================================================
+# STAGE 2: Runtime
+# ============================================================================
 FROM ${BASE_IMAGE} AS runtime
 
 ARG ROS_DISTRO
-
 SHELL ["/bin/bash", "-c"]
 
 ENV ROS_DISTRO=${ROS_DISTRO}
@@ -100,13 +102,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /opt/ros_ws
 
-# Копируем собранные артефакты в /opt/ros_ws/install
+# Копируем собранные артефакты в стандартный путь
 COPY --from=builder /workspace/install /opt/ros_ws/install
 
 # Проверяем CUDA в финальном образе
 RUN nvcc --version && echo "CUDA toolkit present"
 
-# Автозагрузка ROS2 окружения
+# Автозагрузка окружения ROS2
 RUN echo 'source /opt/ros/${ROS_DISTRO}/setup.bash' >> /etc/bash.bashrc && \
     echo 'source /opt/ros_ws/install/setup.bash' >> /etc/bash.bashrc
 
