@@ -1,71 +1,85 @@
+dockerfile
 # syntax=docker/dockerfile:1.7
-FROM dustynv/ros:humble-desktop-l4t-r36.4.0
+# ============================================================================
+# AGX Orin — JetPack 6.2.2 (L4T R36.5.0, ядро 5.15.185-tegra)
+# ============================================================================
+# ПРИМЕЧАНИЕ: официального образа l4t-jetpack:r36.5.0 в NGC пока нет.
+# Используем r36.4.0 — последний доступный, совместимый с JetPack 6.2.2
+# по ключевым библиотекам CUDA/cuDNN. Для 100% соответствия требуется
+# self-hosted Jetson с предустановленным JetPack 6.2.2.
+#
+# ROS2 Humble + pcl_ros устанавливаются ПОВЕРХ официального L4T — это даёт
+# полное соответствие по L4T R36.4.0 и полноценный ROS2-стек.
+# ============================================================================
+
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=humble
 ENV CUDA_ARCHITECTURES="87"
 
-# Фикс ldconfig для QEMU
-RUN if [ -f /sbin/ldconfig ] && [ ! -f /sbin/ldconfig.real ]; then \
-      cp /sbin/ldconfig /sbin/ldconfig.real; \
+# ---------------------------------------------------------------------------
+# 1. Workaround QEMU: подменяем ldconfig заглушкой.
+#    Под ARM64-эмуляцией dpkg triggers вызывают /sbin/ldconfig, который
+#    падает с segfault. Заглушка обходит это.
+# ---------------------------------------------------------------------------
+RUN if [ -x /sbin/ldconfig ] && [ ! -e /sbin/ldconfig.real ]; then \
+        cp /sbin/ldconfig /sbin/ldconfig.real; \
     fi && \
     printf '#!/bin/sh\nexit 0\n' > /sbin/ldconfig && \
     chmod +x /sbin/ldconfig
 
-# Обновление GPG-ключа + системные зависимости
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update 2>/dev/null || true \
-    && apt-get install -y --no-install-recommends wget gnupg2 software-properties-common || true \
-    && rm -f /usr/share/keyrings/ros-archive-keyring.gpg \
-    && rm -f /etc/apt/trusted.gpg.d/ros*.gpg \
-    && apt-key del F42ED6FBAB17C654 2>/dev/null || true \
-    && wget -qO- https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-       | gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg \
+# ---------------------------------------------------------------------------
+# 2. Репозиторий ROS2 Humble
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl gnupg2 lsb-release ca-certificates \
+    && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+        -o /usr/share/keyrings/ros-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
-       http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
-       > /etc/apt/sources.list.d/ros2.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-       curl wget git build-essential cmake pkg-config \
+        http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
+        > /etc/apt/sources.list.d/ros2.list \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка ROS2 Humble + pcl_ros
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update \
-    && apt-get install -y --no-install-recommends \
-       ros-${ROS_DISTRO}-ros-base \
-       ros-${ROS_DISTRO}-pcl-ros \
-       ros-${ROS_DISTRO}-pcl-conversions \
-       python3-colcon-common-extensions \
-       python3-rosdep \
-       python3-vcstool \
+# ---------------------------------------------------------------------------
+# 3. ROS2 Humble + pcl_ros + build-tools + PCL/Eigen
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ros-${ROS_DISTRO}-ros-base \
+        ros-${ROS_DISTRO}-pcl-ros \
+        ros-${ROS_DISTRO}-pcl-conversions \
+        python3-colcon-common-extensions \
+        python3-rosdep \
+        python3-vcstool \
+        python3-pip \
+        build-essential cmake git wget \
+        libpcl-dev libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# PCL, Eigen
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
-       libpcl-dev libeigen3-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN rosdep init 2>/dev/null || true && \
+    rosdep update --rosdistro ${ROS_DISTRO}
 
-# Livox-SDK2
-RUN --mount=type=cache,target=/tmp/livox-build \
-    git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 \
+# ---------------------------------------------------------------------------
+# 4. Livox-SDK2 (для FAST-LIO2)
+# ---------------------------------------------------------------------------
+RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 \
     && cd /tmp/Livox-SDK2 \
     && mkdir build && cd build \
     && cmake .. -DCMAKE_BUILD_TYPE=Release \
-    && make -j2 \
+    && make -j$(nproc) \
     && make install \
     && rm -rf /tmp/Livox-SDK2
 
-RUN rosdep init || true && rosdep update
-
-# Проверка
-RUN test -f /opt/ros/${ROS_DISTRO}/setup.bash && echo "ROS2 OK: /opt/ros/${ROS_DISTRO}/setup.bash" || \
-    (echo "ERROR: setup.bash not found" && find /opt/ros -name "setup.bash" 2>/dev/null && exit 1)
+# ---------------------------------------------------------------------------
+# 5. Восстановить настоящий ldconfig для runtime на реальном Jetson
+# ---------------------------------------------------------------------------
+RUN if [ -e /sbin/ldconfig.real ]; then \
+        mv /sbin/ldconfig.real /sbin/ldconfig && \
+        chmod +x /sbin/ldconfig; \
+    fi
 
 WORKDIR /workspace
 ENV PATH="/opt/ros/${ROS_DISTRO}/bin:${PATH}"
+
 CMD ["/bin/bash"]
