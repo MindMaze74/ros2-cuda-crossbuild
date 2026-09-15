@@ -1,5 +1,8 @@
+# .github/workflows/build.yml
+#
 # Сборка базовых образов и ROS2-пакетов с CUDA для трёх платформ.
 # Конфигурация пакетов читается из config/packages.yaml.
+
 name: CI/CD Pipeline
 
 on:
@@ -7,7 +10,7 @@ on:
     branches:
       - main
       - 'feature/**'
-    tags: [ 'v*' ]
+    tags: ['v*']
     paths:
       - 'docker/**'
       - 'config/**'
@@ -39,7 +42,6 @@ env:
   BUILDKIT_PROGRESS: plain
 
 jobs:
-
   # ---------------------------------------------------------------------------
   # Базовые образы: собираются только при изменении docker/base или вручную
   # ---------------------------------------------------------------------------
@@ -83,8 +85,11 @@ jobs:
 
       - name: Lowercase repo name
         id: repo
-        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+        run: |
+          echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
+      # Ключевой шаг: build-args передаёт BASE_IMAGE внутрь Dockerfile.
+      # Без него ARG BASE_IMAGE остаётся пустым → FROM ${BASE_IMAGE} падает.
       - name: Build and push base image
         uses: docker/build-push-action@v5
         with:
@@ -109,7 +114,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: mikefarah/yq@v4
-
       - name: Generate matrix from packages.yaml
         id: generate
         run: |
@@ -125,7 +129,6 @@ jobs:
             {"platform":"agx","target_platform":"linux/arm64","runner":"ubuntu-latest"},
             {"platform":"nano","target_platform":"linux/arm64","runner":"ubuntu-latest"}
           ]'
-
           SELECTED_PLAT="${{ github.event.inputs.platform }}"
           if [ -n "$SELECTED_PLAT" ]; then
             PLATFORMS=$(echo "$PLATFORMS" | jq --arg p "$SELECTED_PLAT" '[.[] | select(.platform == $p)]')
@@ -134,21 +137,18 @@ jobs:
           MATRIX=$(jq -nc \
             --argjson pkgs "$PACKAGES" \
             --argjson plats "$PLATFORMS" \
-            '{include: [
-              $plats[] as $p | $pkgs[] as $pkg | {
-                platform: $p.platform,
-                target_platform: $p.target_platform,
-                runner: $p.runner,
-                package: $pkg.name,
-                repo: $pkg.repo,
-                branch: $pkg.branch,
-                package_name: $pkg.package_name,
-                ros_distro: $pkg.ros_distro,
-                cuda_arch: ($pkg.cuda_arch[$p.platform] // "87"),
-                cmake_args: $pkg.cmake_args
-              }
-            ]}')
-
+            '{include: [ $plats[] as $p | $pkgs[] as $pkg | {
+              platform: $p.platform,
+              target_platform: $p.target_platform,
+              runner: $p.runner,
+              package: $pkg.name,
+              repo: $pkg.repo,
+              branch: $pkg.branch,
+              package_name: $pkg.package_name,
+              ros_distro: $pkg.ros_distro,
+              cuda_arch: ($pkg.cuda_arch[$p.platform] // "87"),
+              cmake_args: $pkg.cmake_args
+            } ]}')
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
           echo "$MATRIX" | jq .
 
@@ -185,7 +185,8 @@ jobs:
 
       - name: Lowercase repo name
         id: repo
-        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+        run: |
+          echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
       - name: Build and push package image
         uses: docker/build-push-action@v5
@@ -234,13 +235,15 @@ jobs:
 
       - name: Lowercase repo name
         id: repo
-        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+        run: |
+          echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
       - name: Pull and test image
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}"
           ROS_DISTRO="${{ matrix.ros_distro }}"
           echo "Testing image: $IMAGE (ROS2 $ROS_DISTRO)"
+
           docker pull "$IMAGE"
 
           PLATFORM_FLAG=""
