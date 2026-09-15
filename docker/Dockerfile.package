@@ -13,8 +13,6 @@ ARG REPO_URL
 ARG BRANCH
 ARG PACKAGE_NAME
 
-# ⚠️ ВАЖНО: x86 base использует dash как /bin/sh, dash не знает `source`.
-# Переключаем все RUN на bash — единственный кросс-платформенный фикс.
 SHELL ["/bin/bash", "-c"]
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -24,24 +22,20 @@ ENV MAKEFLAGS="-j2"
 
 WORKDIR /workspace/src
 
-# Клонирование пакета с submodules (ikd-Tree для FAST_LIO)
 RUN git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${PACKAGE_NAME}" && \
     cd "${PACKAGE_NAME}" && \
     git submodule update --init --recursive --depth 1 || \
     (echo "⚠️ submodules not found, continuing" && true)
 
-# Livox driver
 RUN git clone --depth 1 https://github.com/Livox-SDK/livox_ros_driver2.git \
     livox_ros_driver2 || true
 
-# rosdep install — с bash теперь `source` работает
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     source /opt/ros/${ROS_DISTRO}/setup.bash && \
     rosdep install --from-paths . --ignore-src -y \
       --skip-keys=livox_ros_driver2,pcl_ros || true
 
-# Сборка через colcon
 WORKDIR /workspace
 RUN --mount=type=cache,target=/workspace/build \
     source /opt/ros/${ROS_DISTRO}/setup.bash && \
@@ -51,19 +45,21 @@ RUN --mount=type=cache,target=/workspace/build \
       --install-base /workspace/install \
       --cmake-args \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_STANDARD=17 \
+        -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+        -DCMAKE_CUDA_STANDARD=17 \
+        -DCMAKE_CUDA_STANDARD_REQUIRED=ON \
         -DFASTLIO_USE_CUDA=ON \
         -DCUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
         -DBUILD_TESTING=OFF
 
 RUN nvcc --version
 
-# Проверка artifacts
 RUN test -d /workspace/install && \
     test -f /workspace/install/setup.bash && \
     echo "✅ install artifacts present" || \
     (echo "❌ install artifacts missing" && ls -la /workspace/ && exit 1)
 
-# Финальный образ
 FROM ${BASE_IMAGE}
 SHELL ["/bin/bash", "-c"]
 
