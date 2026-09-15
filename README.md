@@ -17,12 +17,11 @@ docker run --rm -it ghcr.io/mindmaze74/ros2-cuda-crossbuild/ros2-base-x86:latest
 
 ## Поддерживаемые пакеты
 
-Всего пакетов: **2**. Матрица: пакет × 3 платформы (x86 / agx / nano).
+Всего пакетов: **1**. Матрица: пакет × 3 платформы (x86 / agx / nano).
 
 | Пакет | Репозиторий | Ветка | ROS2 | x86 | agx | nano |
 |---|---|---|---|---|---|---|
 | `fastlio2` | [ruiqichao/FAST_LIO2_GPU](https://github.com/ruiqichao/FAST_LIO2_GPU.git) | `main` | `humble/humble/jazzy` | `86` | `87` | `87` |
-| `fastlivo2` | [hku-mars/FAST-LIVO2](https://github.com/hku-mars/FAST-LIVO2.git) | `main` | `humble/humble/jazzy` | `86` | `87` | `87` |
 
 Добавление нового пакета — одна запись в [`config/packages.yaml`](config/packages.yaml).
 После пуша workflow `README Sync` автоматически обновит эту таблицу.
