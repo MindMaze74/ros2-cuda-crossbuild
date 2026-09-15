@@ -1,4 +1,3 @@
-dockerfile
 # syntax=docker/dockerfile:1.7
 # ============================================================================
 # Orin Nano — JetPack 7 (L4T R38.x)
@@ -15,13 +14,18 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=humble
 ENV CUDA_ARCHITECTURES="87"
 
-# (те же шаги 1-5, что и в AGX)
+# ---------------------------------------------------------------------------
+# 1. Workaround QEMU: подменяем ldconfig заглушкой.
+# ---------------------------------------------------------------------------
 RUN if [ -x /sbin/ldconfig ] && [ ! -e /sbin/ldconfig.real ]; then \
         cp /sbin/ldconfig /sbin/ldconfig.real; \
     fi && \
     printf '#!/bin/sh\nexit 0\n' > /sbin/ldconfig && \
     chmod +x /sbin/ldconfig
 
+# ---------------------------------------------------------------------------
+# 2. Репозиторий ROS2 Humble
+# ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl gnupg2 lsb-release ca-certificates \
     && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
@@ -31,6 +35,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         > /etc/apt/sources.list.d/ros2.list \
     && rm -rf /var/lib/apt/lists/*
 
+# ---------------------------------------------------------------------------
+# 3. ROS2 Humble + pcl_ros + build-tools + PCL/Eigen
+# ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-ros-base \
         ros-${ROS_DISTRO}-pcl-ros \
@@ -45,16 +52,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN rosdep init 2>/dev/null || true && rosdep update --rosdistro ${ROS_DISTRO}
 
+# ---------------------------------------------------------------------------
+# 4. Livox-SDK2 (для FAST-LIO2)
+# ---------------------------------------------------------------------------
 RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 \
     && cd /tmp/Livox-SDK2 && mkdir build && cd build \
     && cmake .. -DCMAKE_BUILD_TYPE=Release \
     && make -j$(nproc) && make install \
     && rm -rf /tmp/Livox-SDK2
 
+# ---------------------------------------------------------------------------
+# 5. Восстановить настоящий ldconfig для runtime на реальном Jetson
+# ---------------------------------------------------------------------------
 RUN if [ -e /sbin/ldconfig.real ]; then \
         mv /sbin/ldconfig.real /sbin/ldconfig && chmod +x /sbin/ldconfig; \
     fi
 
 WORKDIR /workspace
 ENV PATH="/opt/ros/${ROS_DISTRO}/bin:${PATH}"
+
 CMD ["/bin/bash"]
