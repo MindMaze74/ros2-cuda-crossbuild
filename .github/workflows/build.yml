@@ -1,8 +1,10 @@
-name: CI/CD Pipeline
+name: CI/CD Pipeline (Variant A — Humble All)
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+      - 'feature/**'
     tags: [ 'v*' ]
     paths:
       - 'docker/**'
@@ -18,12 +20,12 @@ on:
         description: 'Rebuild package images'
         type: boolean
         default: true
-      package:
-        description: 'Package (empty = all)'
-        default: 'fastlio2'
       platform:
         description: 'Platform: x86 | agx | nano (empty/all = all)'
         default: ''
+      build_type:
+        description: 'Build type: qemu | native | all'
+        default: 'qemu'
 
 env:
   REGISTRY: ghcr.io
@@ -33,7 +35,7 @@ env:
 jobs:
 
   # ==========================================================================
-  # Base
+  # Base Images
   # ==========================================================================
   build-base:
     if: |
@@ -47,12 +49,17 @@ jobs:
           - platform: x86
             dockerfile: docker/Dockerfile.base.x86
             target_platform: linux/amd64
+            base_image: 'nvidia/cuda:12.9.0-devel-ubuntu22.04'
           - platform: agx
             dockerfile: docker/Dockerfile.base.agx
             target_platform: linux/arm64
+            # Если r36.5.2 недоступен, замените на r36.4.0
+            base_image: 'nvcr.io/nvidia/l4t-jetpack:r36.4.0'
           - platform: nano
             dockerfile: docker/Dockerfile.base.nano
             target_platform: linux/arm64
+            # Вариант A: JP6 для совместимости с ROS2 Humble
+            base_image: 'nvcr.io/nvidia/l4t-jetpack:r36.4.0'
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -72,26 +79,30 @@ jobs:
           platforms: ${{ matrix.target_platform }}
           push: true
           provenance: false
+          build-args: |
+            BASE_IMAGE=${{ matrix.base_image }}
           tags: |
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:${{ github.sha }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache,mode=max
 
   # ==========================================================================
-  # Packages — ИСПРАВЛЕННАЯ МАТРИЦА
+  # Packages — QEMU кросс-сборка
   # ==========================================================================
-  build-packages:
+  build-packages-qemu:
     if: |
       always() &&
       (needs.build-base.result == 'success' || needs.build-base.result == 'skipped') &&
       (github.event_name == 'push' ||
-       (github.event_name == 'workflow_dispatch' && inputs.build_packages == true))
+       (github.event_name == 'workflow_dispatch' && inputs.build_packages == true)) &&
+      (github.event_name != 'workflow_dispatch' ||
+       inputs.build_type == 'qemu' || inputs.build_type == 'all')
     needs: build-base
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # ← ИСПРАВЛЕНО: include содержит полные комбинации
         include:
           - package: fastlio2
             platform: x86
@@ -107,20 +118,15 @@ jobs:
             cuda_arch: "87"
     steps:
       - uses: actions/checkout@v4
-
-      # ← ИСПРАВЛЕНО: 'all' или пусто → не фильтруем
       - name: Filter platform
         id: filter
         run: |
           SELECTED="${{ inputs.platform }}"
           if [ -z "$SELECTED" ] || [ "$SELECTED" = "all" ] || [ "$SELECTED" = "${{ matrix.platform }}" ]; then
             echo "skip=false" >> $GITHUB_OUTPUT
-            echo "✅ Processing ${{ matrix.platform }}"
           else
             echo "skip=true" >> $GITHUB_OUTPUT
-            echo "⏭ Skipping ${{ matrix.platform }} (selected: $SELECTED)"
           fi
-
       - uses: docker/setup-qemu-action@v3
         if: steps.filter.outputs.skip == 'false'
       - uses: docker/setup-buildx-action@v3
@@ -144,6 +150,7 @@ jobs:
           push: true
           provenance: false
           tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}-qemu
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
@@ -155,11 +162,65 @@ jobs:
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache,mode=max
 
   # ==========================================================================
-  # Test — тоже с фильтром по 'all'
+  # Packages — нативная сборка на ARM-раннерах (если доступны)
+  # ==========================================================================
+  build-packages-native:
+    if: |
+      always() &&
+      (needs.build-base.result == 'success' || needs.build-base.result == 'skipped') &&
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.build_type == 'native' || inputs.build_type == 'all') &&
+       inputs.build_packages == true)
+    needs: build-base
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: fastlio2
+            platform: agx
+            runner: arm64-agx
+            cuda_arch: "87"
+          - package: fastlio2
+            platform: nano
+            runner: arm64-nano
+            cuda_arch: "87"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+      - name: Lowercase repo name
+        id: repo
+        run: echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.package
+          push: true
+          provenance: false
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}-native
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
+            CUDA_ARCHITECTURES=${{ matrix.cuda_arch }}
+            REPO_URL=https://github.com/ruiqichao/FAST_LIO2_GPU.git
+            BRANCH=main
+            PACKAGE_NAME=fast_lio
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}-native:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}-native:buildcache,mode=max
+
+  # ==========================================================================
+  # Test
   # ==========================================================================
   test-images:
-    needs: build-packages
-    if: always() && needs.build-packages.result == 'success'
+    needs: [build-packages-qemu, build-packages-native]
+    if: |
+      always() &&
+      (needs.build-packages-qemu.result == 'success' || needs.build-packages-native.result == 'success')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -167,20 +228,15 @@ jobs:
         platform: [x86, agx, nano]
     steps:
       - uses: actions/checkout@v4
-
-      # ← ИСПРАВЛЕНО: 'all' или пусто → не фильтруем
       - name: Filter platform
         id: filter
         run: |
           SELECTED="${{ inputs.platform }}"
           if [ -z "$SELECTED" ] || [ "$SELECTED" = "all" ] || [ "$SELECTED" = "${{ matrix.platform }}" ]; then
             echo "skip=false" >> $GITHUB_OUTPUT
-            echo "✅ Testing ${{ matrix.platform }}"
           else
             echo "skip=true" >> $GITHUB_OUTPUT
-            echo "⏭ Skipping test for ${{ matrix.platform }}"
           fi
-
       - uses: docker/setup-qemu-action@v3
         if: steps.filter.outputs.skip == 'false'
       - uses: docker/login-action@v3
@@ -207,6 +263,6 @@ jobs:
 
           docker run --rm $PLATFORM_FLAG "$IMAGE" nvcc --version
           docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && echo ROS_DISTRO=\$ROS_DISTRO"
-          docker run --rm $PLATFORM_FLAG "$IMAGE" ls -la /workspace/install/
-          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && source /workspace/install/setup.bash && ros2 pkg list | grep fast_lio" || true
-          echo "✅ All tests passed for $IMAGE"
+          docker run --rm $PLATFORM_FLAG "$IMAGE" ls -la /opt/ros_ws/install/
+          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && source /opt/ros_ws/install/setup.bash && ros2 pkg list | grep fast_lio" || true
+          echo "All tests passed for $IMAGE"
