@@ -7,10 +7,10 @@
 
 | # | Решение | Статус | Дата |
 |---|---|---|---|
-| [0001](0001-why-qemu.md) | Кросс-сборка ARM64 через QEMU, а не только нативно | Accepted | сентябрь 2026 |
-| [0002](0002-why-jazzy-for-nano.md) | ROS2 Jazzy на Orin Nano вместо Humble | Accepted | сентябрь 2026 |
-| [0003](0003-why-kitware-apt.md) | CMake из Kitware APT вместо apt/pip | Accepted | сентябрь 2026 |
-
+| [0001](0001-why-qemu.md) | Кросс-сборка ARM64 через QEMU, а не только нативно | Accepted |
+| [0002](0002-why-jazzy-for-nano.md) | ROS2 Jazzy на Orin Nano вместо Humble | Accepted |
+| [0003](0003-why-kitware-apt.md) | CMake из Kitware APT вместо apt/pip | Superseded by 0004 |
+| [0004](0004-why-cmake-binary-archive.md) | CMake из бинарного архива GitHub | Accepted |
 ## Что такое ADR
 
 ADR — короткая записка на 1–2 страницы, которая фиксирует:
