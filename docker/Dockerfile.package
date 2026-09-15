@@ -36,21 +36,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=${ROS_DISTRO}
 ENV MAKEFLAGS="-j$(nproc)"
 
-# CMake 3.28+ из репозитория Kitware.
-# CMake 3.22 из Ubuntu 22.04 не пробрасывает CMAKE_CUDA_STANDARD в nvcc,
-# из-за чего nvcc компилирует .cu с C++14 и падает на заголовках ROS2.
-# CMake 4.4 из Kitware корректно обрабатывает CMAKE_CUDA_STANDARD=17.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        wget gpg ca-certificates lsb-release && \
-    wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | \
-        gpg --dearmor -o /usr/share/keyrings/kitware-archive-keyring.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] \
-        https://apt.kitware.com/ubuntu/ $(lsb_release -cs) main" \
-        > /etc/apt/sources.list.d/kitware.list && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends cmake && \
-    rm -rf /var/lib/apt/lists/* && \
+# CMake уже установлен в базовом образе из Kitware APT (см. ADR-0003).
+# Проверяем версию, но не переустанавливаем — переустановка через повторный
+# download ключа Kitware даёт лишнюю точку отказа (транзиентные сбои
+# apt.kitware.com ломают сборку).
+RUN cmake --version && \
+    cmake --version | grep -qE 'version (3\.2[89]|[4-9])' || \
+    (echo "ERROR: base image must have CMake >= 3.28 from Kitware" && exit 1)pt/lists/* && \
     cmake --version
 
 # Python dev-заголовки. Нужны для find_package(PythonLibs REQUIRED)
@@ -89,16 +81,18 @@ RUN if [ "$PACKAGE_NAME" = "fast_livo" ]; then \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DBUILD_SOPHUS_TESTS=OFF \
             -DBUILD_SOPHUS_EXAMPLES=OFF \
-        && make -j$(nproc) install \
-        && rm -rf /tmp/Sophus; \
+        && make -j$(nproc) install; \
+      cd /tmp; \
+      rm -rf /tmp/Sophus; \
       \
       git clone --depth 1 https://github.com/xuankuzcr/rpg_vikit.git /tmp/vikit; \
       cd /tmp/vikit/vikit_common && mkdir build && cd build \
         && cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-        && make -j$(nproc) install \
-        && rm -rf /tmp/vikit; \
+        && make -j$(nproc) install; \
+      cd /tmp; \
+      rm -rf /tmp/vikit; \
       \
       ldconfig; \
     fi
