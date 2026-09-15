@@ -33,7 +33,7 @@ ENV MAKEFLAGS="-j$(nproc)"
 # Ubuntu 24.04 (nano) уже имеет CMake 3.28 — там сборка проходила.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends python3-pip && \
-    pip3 install --no-cache-dir "cmake>=3.28,<3.30" && \
+    pip3 install --no-cache-dir --break-system-packages "cmake>=3.28,<3.30" && \
     rm -rf /var/lib/apt/lists/* && \
     which cmake && cmake --version
 
