@@ -40,23 +40,22 @@ jobs:
   # Base
   # ==========================================================================
   build-base:
-    if: |
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.build_base == true)
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
         include:
           - platform: x86
             dockerfile: docker/Dockerfile.base.x86
             target_platform: linux/amd64
+            base_image: 'nvidia/cuda:12.9.0-devel-ubuntu22.04'
           - platform: agx
             dockerfile: docker/Dockerfile.base.agx
             target_platform: linux/arm64
+            base_image: 'nvcr.io/nvidia/l4t-jetpack:r36.4.0'
           - platform: nano
             dockerfile: docker/Dockerfile.base.nano
             target_platform: linux/arm64
+            base_image: 'nvcr.io/nvidia/l4t-jetpack:r36.4.0'
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -80,6 +79,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache,mode=max
+
 
   # ==========================================================================
   # Packages — ИСПРАВЛЕННАЯ МАТРИЦА
