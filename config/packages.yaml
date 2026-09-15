@@ -2,17 +2,18 @@
 # Добавление нового пакета — одна запись в массиве packages.
 #
 # Поля:
-#   name         — имя пакета (используется в тегах)
+#   name         — имя пакета (используется в тегах образов)
 #   repo         — Git URL репозитория
 #   branch       — ветка
-#   package_name — имя пакета внутри репозитория (для colcon --packages-select)
+#   package_name — имя пакета внутри репозитория (для colcon --packages-select и ros2 pkg)
 #   ros_distro   — humble (Ubuntu 22.04) или jazzy (Ubuntu 24.04)
 #   cuda_arch    — CUDA_ARCHITECTURES для каждой платформы
+#                  x86 — 86 (Ampere), agx — 87 (Orin), nano — 87 (Orin)
 #   cmake_args   — дополнительные флаги CMake
 
 packages:
   - name: fastlio2
-    repo: https://github.com/ruiqichao/FAST_LIO2_GPU.git
+    repo: https://github.com/hku-mars/FAST_LIO.git
     branch: main
     package_name: fast_lio
     ros_distro: humble
@@ -20,4 +21,4 @@ packages:
       x86: "86"
       agx: "87"
       nano: "87"
-    cmake_args: "-DCMAKE_BUILD_TYPE=Release -DFASTLIO_USE_CUDA=ON -DBUILD_TESTING=OFF"
+    cmake_args: "-DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF"

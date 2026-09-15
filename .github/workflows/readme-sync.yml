@@ -1,0 +1,61 @@
+# .github/workflows/readme-sync.yml
+#
+# Автогенерация секции "Поддерживаемые пакеты" в README.md
+# на основе config/packages.yaml.
+#
+# При изменении packages.yaml workflow запускает scripts/render-readme.sh
+# и открывает PR с обновлённым README. Если изменений нет — PR не создаётся.
+
+name: README Sync
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+    paths:
+      - 'config/packages.yaml'
+      - 'scripts/render-readme.sh'
+      - 'README.md'
+      - '.github/workflows/readme-sync.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: readme-sync-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: mikefarah/yq@v4
+
+      - name: Render README section
+        run: |
+          chmod +x scripts/render-readme.sh
+          ./scripts/render-readme.sh
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: 'docs: sync README with config/packages.yaml'
+          title: 'docs: sync README with config/packages.yaml'
+          body: |
+            Автоматическое обновление таблицы поддерживаемых пакетов
+            в `README.md` на основе `config/packages.yaml`.
+
+            Секция между маркерами `PACKAGES_TABLE:START/END` сгенерирована
+            скриптом `scripts/render-readme.sh`. Не редактируйте её вручную.
+          branch: chore/readme-sync
+          delete-branch: true
+          base: ${{ github.ref_name }}
+          add-paths: |
+            README.md
