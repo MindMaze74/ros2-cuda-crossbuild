@@ -47,10 +47,13 @@ RUN --mount=type=cache,target=/workspace/build \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_CXX_STANDARD=17 \
         -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+        -DCMAKE_CXX_EXTENSIONS=OFF \
         -DCMAKE_CUDA_STANDARD=17 \
         -DCMAKE_CUDA_STANDARD_REQUIRED=ON \
+        -DCMAKE_CUDA_EXTENSIONS=OFF \
+        -DCMAKE_CUDA_FLAGS="-std=c++17 --expt-relaxed-constexpr --expt-extended-lambda" \
+        -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
         -DFASTLIO_USE_CUDA=ON \
-        -DCUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
         -DBUILD_TESTING=OFF
 
 RUN nvcc --version
