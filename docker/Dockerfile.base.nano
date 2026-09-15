@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM dustynv/ros:humble-desktop-l4t-r36.4.0
+FROM dustynv/ros:humble-desktop-l4t-l4t-r36.5.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=humble
