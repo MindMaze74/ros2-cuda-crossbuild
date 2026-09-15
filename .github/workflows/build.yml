@@ -57,9 +57,10 @@ jobs:
           - platform: nano
             dockerfile: docker/Dockerfile.base.nano
             target_platform: linux/arm64
+            base_image: 'nvidia/cuda:12.6.3-devel-ubuntu24.04'
             # JetPack 7 (L4T R39.2.1, Ubuntu 24.04)
             # Если тег недоступен — замените на ближайший доступный R39.x
-            base_image: 'nvcr.io/nvidia/l4t-jetpack:r39.2.1'
+            #base_image: 'nvcr.io/nvidia/l4t-jetpack:r39.2.1'
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
