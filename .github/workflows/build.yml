@@ -9,6 +9,8 @@
 #   - timeout-minutes, concurrency — защита от зависаний и наложения прогонов
 #   - двухуровневый кеш: actions/cache (local) + registry
 #   - smoke-тест компиляции CUDA + ldd-проверка зависимостей
+#   - ros_distro резолвится по платформе (map в packages.yaml)
+#   - фильтр по полю platforms (пакет × платформа)
 
 name: CI/CD Pipeline
 
@@ -160,10 +162,23 @@ jobs:
       matrix: ${{ steps.generate.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
-      - uses: mikefarah/yq@v4
+
+      # mikefarah/yq@v4 — это Docker container action: он запускает yq внутри
+      # контейнера и завершается, НЕ добавляя бинарник в PATH job'а.
+      # Поэтому ставим yq явно.
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          hash -r
+          yq --version
+
       - name: Generate matrix
         id: generate
         run: |
+          set -euo pipefail
+
           PACKAGES=$(yq -o=json -I=0 '.packages' config/packages.yaml)
 
           SELECTED_PKG="${{ github.event.inputs.package }}"
@@ -182,23 +197,46 @@ jobs:
             PLATFORMS=$(echo "$PLATFORMS" | jq --arg p "$SELECTED_PLAT" '[.[] | select(.platform == $p)]')
           fi
 
+          # Собираем декартово произведение пакетов и платформ, с двумя фильтрами:
+          #   1. Если у пакета задано поле platforms — пропускаем комбинации
+          #      с платформами, которых там нет.
+          #   2. ros_distro может быть строкой (на все платформы) или map'ом
+          #      { x86, agx, nano } — во втором случае берём значение по платформе.
           MATRIX=$(jq -nc \
             --argjson pkgs "$PACKAGES" \
             --argjson plats "$PLATFORMS" \
-            '{include: [ $plats[] as $p | $pkgs[] as $pkg | {
-              platform: $p.platform,
-              target_platform: $p.target_platform,
-              runner: $p.runner,
-              package: $pkg.name,
-              repo: $pkg.repo,
-              branch: $pkg.branch,
-              package_name: $pkg.package_name,
-              ros_distro: $pkg.ros_distro,
-              cuda_arch: ($pkg.cuda_arch[$p.platform] // "87"),
-              cmake_args: $pkg.cmake_args
-            } ]}')
+            '{include: [
+              $pkgs[] as $pkg |
+              $plats[] as $p |
+              if ($pkg.platforms // null) != null
+                 and (($pkg.platforms | index($p.platform)) == null)
+              then empty
+              else {
+                platform: $p.platform,
+                target_platform: $p.target_platform,
+                runner: $p.runner,
+                package: $pkg.name,
+                repo: $pkg.repo,
+                branch: $pkg.branch,
+                package_name: $pkg.package_name,
+                ros_distro: (
+                  if ($pkg.ros_distro | type) == "object"
+                  then $pkg.ros_distro[$p.platform]
+                  else $pkg.ros_distro
+                  end
+                ),
+                cuda_arch: ($pkg.cuda_arch[$p.platform] // "87"),
+                cmake_args: $pkg.cmake_args
+              }
+              end
+            ]}')
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
           echo "$MATRIX" | jq .
+
+          # Краткая сводка в логе, чтобы видеть, что собралось в матрицу.
+          echo ""
+          echo "Matrix size: $(echo "$MATRIX" | jq '.include | length')"
+          echo "$MATRIX" | jq -r '.include[] | "  - \(.package) × \(.platform) (ros=\(.ros_distro))"'
 
   # ---------------------------------------------------------------------------
   # Пакеты
