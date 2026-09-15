@@ -41,7 +41,7 @@ cd ros2-cuda-crossbuild
 | Branch | `main` |
 | Rebuild base images | true (первый раз) |
 | Rebuild package images | true |
-| Build native ARM | ☐ false (нет раннера) |
+| Build native ARM | false (нет раннера) |
 | Package | `all` |
 | Platform | пусто |
 
