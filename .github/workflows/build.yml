@@ -83,6 +83,7 @@ jobs:
             BASE_IMAGE=${{ matrix.base_image }}
           tags: |
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:${{ github.sha }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache,mode=max
 
@@ -152,12 +153,13 @@ jobs:
           provenance: false
           tags: |
             ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}-${{ github.sha }}
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:latest
-            CUDA_ARCHITECTURES=${{ matrix.cuda_arch }}
             REPO_URL=https://github.com/ruiqichao/FAST_LIO2_GPU.git
             BRANCH=main
             PACKAGE_NAME=fast_lio
+            CUDA_ARCHITECTURES=${{ matrix.cuda_arch }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache,mode=max
 
@@ -213,6 +215,6 @@ jobs:
 
           docker run --rm $PLATFORM_FLAG "$IMAGE" nvcc --version
           docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && echo ROS_DISTRO=\$ROS_DISTRO"
-          docker run --rm $PLATFORM_FLAG "$IMAGE" ls -la /workspace/install/
-          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && source /workspace/install/setup.bash && ros2 pkg list | grep fast_lio" || true
+          docker run --rm $PLATFORM_FLAG "$IMAGE" ls -la /opt/ros_ws/install/
+          docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "source /opt/ros/humble/setup.bash && source /opt/ros_ws/install/setup.bash && ros2 pkg list | grep fast_lio" || true
           echo "✅ All tests passed for $IMAGE"
