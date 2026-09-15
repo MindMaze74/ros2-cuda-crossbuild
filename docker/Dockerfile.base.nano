@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1.7
 # ============================================================================
-# Orin Nano — JetPack 7 (L4T R39.2.1, Ubuntu 24.04)
+# Orin Nano — JetPack 7 (Ubuntu 24.04)
 # ВАРИАНТ B: ROS2 Jazzy
 # ============================================================================
-# Если тег r39.2.1 недоступен в NGC, проверьте актуальные теги:
-#   docker pull nvcr.io/nvidia/l4t-jetpack:r39.2.1
-# или используйте dusty-nv/jetson-containers как альтернативу.
+# l4t-jetpack:r39.x НЕ существует в NGC.
+# Используем nvidia/cuda:12.6.3-devel-ubuntu24.04 (multi-arch: arm64 + x86_64)
+# https://hub.docker.com/r/nvidia/cuda — поддерживает linux/arm64
 # ============================================================================
 
 ARG BASE_IMAGE
@@ -35,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ROS2 Jazzy + зависимости
 # Примечание: имена пакетов в Jazzy могут отличаться от Humble.
-# Если пакет недоступен — закомментируйте строку и соберите из исходников.
+# Если пакет недоступен — закомментируйте и соберите из исходников.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-ros-base \
         ros-${ROS_DISTRO}-pcl-ros \
