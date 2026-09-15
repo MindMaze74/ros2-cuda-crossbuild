@@ -30,10 +30,18 @@ ENV MAKEFLAGS="-j$(nproc)"
 # Ubuntu 22.04 (x86, agx) идёт с CMake 3.22, который НЕ пробрасывает
 # CMAKE_CUDA_STANDARD=17 в nvcc. nvcc остаётся на C++14 и падает на
 # std::is_same_v / std::optional / std::variant в rclcpp-заголовках.
-# Ubuntu 24.04 (nano) уже имеет CMake 3.28 — там сборка проходила.
+# Ubuntu 24.04 (nano) уже имеет CMake 3.28, но этот блок безопасен и для неё.
+#
+# Используем официальный APT-репозиторий Kitware — он работает одинаково
+# на Ubuntu 22.04 (jammy) и 24.04 (noble) и даёт CMake 3.28+.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3-pip && \
-    pip3 install --no-cache-dir --break-system-packages "cmake>=3.28,<3.30" && \
+    apt-get install -y --no-install-recommends wget gpg ca-certificates && \
+    wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | \
+        gpg --dearmor -o /usr/share/keyrings/kitware-archive-keyring.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ $(lsb_release -cs) main" \
+        > /etc/apt/sources.list.d/kitware.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends cmake && \
     rm -rf /var/lib/apt/lists/* && \
     which cmake && cmake --version
 
