@@ -1,5 +1,6 @@
 # Базовый образ ROS2 Humble + CUDA для x86_64.
-ARG BASE_IMAGE
+
+ARG BASE_IMAGE=nvidia/cuda:12.9.0-devel-ubuntu22.04
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -8,7 +9,7 @@ ENV CUDA_ARCHITECTURES="86"
 
 # Системные зависимости и инструменты сборки
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        wget gnupg2 lsb-release ca-certificates \
+        curl wget gnupg2 lsb-release ca-certificates \
         build-essential cmake git pkg-config \
     && rm -rf /var/lib/apt/lists/*
 

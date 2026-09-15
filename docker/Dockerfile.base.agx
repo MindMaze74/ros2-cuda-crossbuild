@@ -1,14 +1,15 @@
 # Базовый образ ROS2 Humble + CUDA для Jetson AGX Orin.
-# Использует официальный JetPack 6.2.2 (L4T R36.4.0 — ближайший доступный).
-ARG BASE_IMAGE
+# JetPack 6.2.2 (L4T R36.5.0) — используется ближайший доступный r36.4.0.
+
+ARG BASE_IMAGE=nvcr.io/nvidia/l4t-jetpack:r36.4.0
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=humble
 ENV CUDA_ARCHITECTURES="87"
 
-# Подменяем ldconfig заглушкой до конца сборки. Это обходит segfault QEMU
-# при обработке dpkg triggers, восстанавливаем в финале.
+# Заглушка ldconfig для обхода segfault QEMU при dpkg triggers.
+# Восстанавливаем в конце сборки.
 RUN if [ -x /sbin/ldconfig ] && [ ! -e /sbin/ldconfig.real ]; then \
         cp /sbin/ldconfig /sbin/ldconfig.real; \
     fi && \
@@ -46,7 +47,7 @@ RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-S
     make -j$(nproc) && make install && \
     rm -rf /tmp/Livox-SDK2
 
-# Восстанавливаем ldconfig
+# Восстанавливаем настоящий ldconfig
 RUN if [ -e /sbin/ldconfig.real ]; then \
         mv /sbin/ldconfig.real /sbin/ldconfig && chmod +x /sbin/ldconfig; \
     fi
