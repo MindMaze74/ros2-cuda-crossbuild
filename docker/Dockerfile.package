@@ -36,43 +36,65 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=${ROS_DISTRO}
 ENV MAKEFLAGS="-j$(nproc)"
 
-# CMake уже установлен в базовом образе из Kitware APT (см. ADR-0003).
-# Проверяем версию, но не переустанавливаем — переустановка через повторный
-# download ключа Kitware даёт лишнюю точку отказа (транзиентные сбои
-# apt.kitware.com ломают сборку).
-RUN cmake --version && \
-    cmake --version | grep -qE 'version (3\.2[89]|[4-9])' || \
-    (echo "ERROR: base image must have CMake >= 3.28 from Kitware" && exit 1)pt/lists/* && \
-    cmake --version
+# Временное отключение NVIDIA CUDA-репозитория.
+# developer.download.nvidia.com периодически отдаёт несинхронизированный
+# Packages.gz → apt-get update падает с "File has unexpected size".
+# CUDA уже установлена в базовом образе, переустановка не нужна.
+RUN find /etc/apt/sources.list.d -type f \( -name '*cuda*' -o -name '*nvidia*' \) \
+        -exec mv {} /tmp/ \;
 
-# Python dev-заголовки. Нужны для find_package(PythonLibs REQUIRED)
-# в CMakeLists.txt FAST_LIO2_GPU. В базовых образах их нет,
-# rosdep их не тянет (не задекларированы в package.xml репозитория).
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# CMake 4.x из бинарного архива Kitware на GitHub.
+# НЕ используем apt.kitware.com: репозиторий нестабилен в CI (пустые ответы).
+# Архитектура определяется автоматически: x86_64 или aarch64.
+ARG CMAKE_VERSION=4.4.3
+RUN set -eux; \
+    ARCH=$(uname -m); \
+    echo "Detected architecture: ${ARCH}"; \
+    \
+    wget --tries=5 --waitretry=5 --timeout=120 \
+        -O /tmp/cmake.tar.gz \
+        "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-${ARCH}.tar.gz"; \
+    \
+    test -s /tmp/cmake.tar.gz; \
+    mkdir -p /opt/cmake; \
+    tar -xzf /tmp/cmake.tar.gz -C /opt/cmake --strip-components=1; \
+    rm -f /tmp/cmake.tar.gz; \
+    \
+    # Симлинки в /usr/local/bin, чтобы cmake из /opt/cmake был раньше системного
+    ln -sf /opt/cmake/bin/cmake /usr/local/bin/cmake; \
+    ln -sf /opt/cmake/bin/ctest /usr/local/bin/ctest; \
+    ln -sf /opt/cmake/bin/cpack /usr/local/bin/cpack; \
+    \
+    # Проверка: CMake должен быть >= 3.28
+    cmake --version; \
+    cmake --version | grep -qE 'version (3\.2[89]|[4-9])'
+
+# Python dev-заголовки для find_package(PythonLibs REQUIRED) в FAST_LIO2_GPU.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
         python3-dev \
         libpython3-dev \
-        python3-numpy \
-    && rm -rf /var/lib/apt/lists/*
+        python3-numpy; \
+    rm -rf /var/lib/apt/lists/*
 
 # Дополнительные зависимости FAST-LIVO2: Sophus и Vikit (rpg_vikit).
-# Ставим только если собираем fast_livo — для fast_lio они не нужны.
+# Ставим только если собираем fast_livo.
 #
-# Sophus — 1.22.10, совместим с C++17 и Eigen 3.4.
-# CMAKE_POLICY_VERSION_MINIMUM=3.5 — обход ошибки CMake 4.x на старом
-# cmake_minimum_required(VERSION 3.0) внутри Sophus.
-#
-# Vikit — форк HKU MARS: https://github.com/xuankuzcr/rpg_vikit
+# ВАЖНО: перед каждым rm -rf делаем cd /tmp, иначе удаляем текущий рабочий
+# каталог, и следующая git clone падает с exit 128.
 RUN if [ "$PACKAGE_NAME" = "fast_livo" ]; then \
       set -eux; \
-      apt-get update && apt-get install -y --no-install-recommends \
+      apt-get update; \
+      apt-get install -y --no-install-recommends \
         libeigen3-dev \
         libopencv-dev \
         ros-${ROS_DISTRO}-cv-bridge \
         ros-${ROS_DISTRO}-image-transport \
         ros-${ROS_DISTRO}-tf2-eigen \
         ros-${ROS_DISTRO}-pcl-ros \
-        ros-${ROS_DISTRO}-pcl-conversions \
-      && rm -rf /var/lib/apt/lists/*; \
+        ros-${ROS_DISTRO}-pcl-conversions; \
+      rm -rf /var/lib/apt/lists/*; \
       \
       git clone --depth 1 --branch 1.22.10 https://github.com/strasdat/Sophus.git /tmp/Sophus; \
       cd /tmp/Sophus && mkdir build && cd build \
@@ -99,28 +121,20 @@ RUN if [ "$PACKAGE_NAME" = "fast_livo" ]; then \
 
 WORKDIR /workspace/src
 
-# Клонируем пакет и submodules (ikd-Tree нужен для FAST-LIO)
 RUN git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${PACKAGE_NAME}" && \
     cd "${PACKAGE_NAME}" && \
     git submodule update --init --recursive --depth 1 || \
     (echo "submodules not found, continuing" && true)
 
-# Опциональная зависимость FAST-LIO — если не склонируется, продолжаем
 RUN git clone --depth 1 https://github.com/Livox-SDK/livox_ros_driver2.git \
         livox_ros_driver2 || true
 
-# Зависимости через rosdep.
-# pcl_ros НЕ скипаем — FAST-LIVO2 и FAST-LIO2 его используют,
-# без него падает компиляция на #include <pcl_ros/...>.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     source /opt/ros/${ROS_DISTRO}/setup.bash && \
     rosdep install --from-paths . --ignore-src -y \
         --skip-keys=livox_ros_driver2 || true
 
-# Сборка.
-# CMAKE_POLICY_VERSION_MINIMUM=3.5 — обход CMake 4.x на старых
-# cmake_minimum_required в CMakeLists.txt пакетов HKU MARS.
 WORKDIR /workspace
 RUN --mount=type=cache,target=/workspace/build \
     source /opt/ros/${ROS_DISTRO}/setup.bash && \
@@ -141,7 +155,6 @@ RUN --mount=type=cache,target=/workspace/build \
             -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
             ${CMAKE_ARGS}
 
-# Проверки
 RUN nvcc --version
 RUN test -d /workspace/install && \
     test -f /workspace/install/setup.bash && \
@@ -160,13 +173,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /opt/ros_ws
 
-# Копируем собранные артефакты в стандартный путь
 COPY --from=builder /workspace/install /opt/ros_ws/install
 
-# CUDA присутствует в базовом образе, но проверим явно.
 RUN nvcc --version && echo "CUDA toolkit present"
 
-# Автозагрузка окружения ROS2
 RUN echo 'source /opt/ros/${ROS_DISTRO}/setup.bash' >> /etc/bash.bashrc && \
     echo 'source /opt/ros_ws/install/setup.bash' >> /etc/bash.bashrc
 

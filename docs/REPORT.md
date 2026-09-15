@@ -55,13 +55,17 @@
 | OS | Ubuntu 22.04 | Ubuntu 22.04 | Ubuntu 24.04 |
 | ROS2 | Humble | Humble | Jazzy (см. ADR-0002) |
 | CUDA arch | 86 | 87 | 87 |
-| Особенности | стандартный CUDA-стек | L4T, `r36.4.0` вместо `r36.5.0` (нет в NGC) | JetPack 7, PEP 668, Kitware APT вместо pip |
+| Особенности | стандартный CUDA-стек | L4T, `r36.4.0` вместо `r36.5.0` (нет в NGC) | JetPack 7, PEP 668 |
 
 **Инструменты:** Docker Buildx, QEMU (ARM64-эмуляция), официальные контейнеры
-NVIDIA (`nvcr.io/nvidia/l4t-jetpack`), Kitware APT для CMake 3.28+.
+NVIDIA (`nvcr.io/nvidia/l4t-jetpack`), CMake 4.4.3 из официального бинарного
+архива Kitware на GitHub.
 
-**Тестовые пакеты:** FAST-LIO2 в модификации `ruiqichao/FAST_LIO2_GPU`
-(содержит CUDA-версию `ikd-Tree`), FAST-LIVO2 (`hku-mars/FAST-LIVO2`).
+**Тестовый пакет:** FAST-LIO2 в модификации `ruiqichao/FAST_LIO2_GPU`
+(содержит CUDA-версию `ikd-Tree`). Репозиторий `hku-mars/FAST_LIVO2`
+не используется: это ROS1 catkin-пакет, несовместимый с ROS2 ament-сборкой
+(`find_package(catkin REQUIRED)` в `CMakeLists.txt`). ТЗ допускает любой
+из двух тестовых пакетов.
 
 ### 3.2 Базовые Docker-образы
 
@@ -73,7 +77,11 @@ NVIDIA (`nvcr.io/nvidia/l4t-jetpack`), Kitware APT для CMake 3.28+.
 | AGX base | `ghcr.io/mindmaze74/ros2-cuda-crossbuild/ros2-base-agx:latest` |
 | Nano base | `ghcr.io/mindmaze74/ros2-cuda-crossbuild/ros2-base-nano:latest` |
 
-Все содержат ROS2, CUDA Toolkit, `colcon`, `rosdep`, Kitware CMake 4.4.3.
+Все содержат ROS2, CUDA Toolkit, `colcon`, `rosdep`. CMake 4.4.3 доставляется
+в `Dockerfile.package` из официального бинарного архива GitHub
+(`github.com/Kitware/CMake/releases`) — системный CMake 3.22 из Ubuntu 22.04
+не пробрасывает `CMAKE_CUDA_STANDARD=17` в `nvcc` (см. ADR-0003).
+
 Образы запинены по digest — `build-packages` резолвит digest базового образа
 на лету и использует `@sha256:...` вместо мутабельного `:latest`.
 
@@ -94,14 +102,22 @@ NVIDIA (`nvcr.io/nvidia/l4t-jetpack`), Kitware APT для CMake 3.28+.
 
 Особенности:
 
-- CMake 3.28+ из Kitware APT — иначе `CMAKE_CUDA_STANDARD=17` не пробрасывается
-  в `nvcc` (см. ADR-0003);
+- CMake 4.4.3 из бинарного архива GitHub — обход нестабильного apt-репозитория
+  Kitware (`apt.kitware.com` периодически недоступен в CI). Архитектура
+  (`x86_64` / `aarch64`) определяется автоматически через `uname -m`, что
+  позволяет использовать один Dockerfile для всех трёх платформ;
+- временное отключение CUDA-репозитория NVIDIA в builder — обход
+  рассинхронизации `Packages.gz` (`File has unexpected size`). CUDA уже
+  установлена в базовом образе, переустановка не нужна;
 - `python3-dev` + `libpython3-dev` — для `find_package(PythonLibs REQUIRED)`,
   которое делает `FAST_LIO2_GPU`;
-- условная установка Sophus + Vikit для `fast_livo`;
-- `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` — обход CMake 4.4 на старых
+- `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` — обход CMake 4.x на старых
   `cmake_minimum_required` в исследовательских CMakeLists;
 - smoke-проверки `nvcc --version` и наличие `install/setup.bash`.
+
+Блок Sophus + Vikit для `fast_livo` сохранён в Dockerfile с условием
+`[ "$PACKAGE_NAME" = "fast_livo" ]` как документированная заготовка на случай
+появления ROS2-совместимого форка FAST-LIVO2. Для FAST-LIO2 блок инертен.
 
 ### 3.4 Кросс-платформенная сборка
 
@@ -134,11 +150,13 @@ NVIDIA (`nvcr.io/nvidia/l4t-jetpack`), Kitware APT для CMake 3.28+.
 | Job | Матрица | Параллелизм |
 |---|---|---|
 | `build-base` | 3 платформы | `max-parallel: 1` |
-| `build-packages` | 5–7 (пакет × платформа × тип сборки) | `max-parallel: 1` |
-| `test-images` | те же 5–7 | `max-parallel: 3` |
+| `build-packages` | 3 cross + 2 native (по флагу) = 3–5 | `max-parallel: 1` |
+| `test-images` | те же 3–5 | `max-parallel: 3` |
 
-Формально ТЗ требует «3 платформы × 2 типа сборки = 6 комбинаций». Реализовано
-7 (5 cross + 2 native, включаются по флагу).
+Формально ТЗ требует «3 платформы × 2 типа сборки = 6 комбинаций».
+Реализовано 3 cross-комбинации (x86 / agx / nano) для FAST-LIO2 плюс
+2 native-комбинации (agx-native, nano-native) — включаются флагом
+при наличии self-hosted Jetson-раннеров.
 
 **Кеширование:**
 
@@ -173,7 +191,9 @@ NVIDIA (`nvcr.io/nvidia/l4t-jetpack`), Kitware APT для CMake 3.28+.
 | `docs/DEPLOYMENT.md` | Развёртывание, добавление пакета, self-hosted runner |
 | `docs/architecture.md` | Схема пайплайна (Mermaid), поток данных, кеширование |
 | `docs/REPORT.md` | Этот документ |
-| `docs/adr/` | Три ADR: QEMU, Jazzy на Nano, Kitware APT |
+| `docs/adr/0001-why-qemu.md` | Обоснование QEMU вместо только native ARM |
+| `docs/adr/0002-why-jazzy-for-nano.md` | Обоснование Jazzy на Nano |
+| `docs/adr/0003-why-kitware-apt.md` | Обоснование CMake из бинарного архива |
 | `scripts/render-readme.sh` | Генерация таблицы пакетов |
 
 ---
@@ -182,11 +202,11 @@ NVIDIA (`nvcr.io/nvidia/l4t-jetpack`), Kitware APT для CMake 3.28+.
 
 | Пункт ТЗ | Статус | Где смотреть |
 |---|---|---|
-| Работающий CI/CD-пайплайн | | `.github/workflows/build.yml`, вкладка Actions |
-| Три базовых Docker-образа в реестре | | `ghcr.io/mindmaze74/ros2-cuda-crossbuild/ros2-base-*` |
-| Пример собранного образа FAST-LIO2 | | `ghcr.io/mindmaze74/ros2-cuda-crossbuild/ros2-package-fastlio2:*` |
-| Подтверждение наличия CUDA | | Лог job'а `test-images`, шаг `Pull and test image` |
-| Документация и вспомогательные скрипты | | `docs/`, `scripts/` |
+| Работающий CI/CD-пайплайн | ✅ | `.github/workflows/build.yml`, вкладка Actions |
+| Три базовых Docker-образа в реестре | ✅ | `ghcr.io/mindmaze74/ros2-cuda-crossbuild/ros2-base-*` |
+| Пример собранного образа FAST-LIO2 | ✅ | `ghcr.io/mindmaze74/ros2-cuda-crossbuild/ros2-package-fastlio2:*` |
+| Подтверждение наличия CUDA | ✅ | Лог job'а `test-images`, шаг `Pull and test image` |
+| Документация и вспомогательные скрипты | ✅ | `docs/`, `scripts/` |
 
 **Публичные ссылки:**
 
@@ -201,7 +221,7 @@ NVIDIA (`nvcr.io/nvidia/l4t-jetpack`), Kitware APT для CMake 3.28+.
 
 - [ADR-0001](adr/0001-why-qemu.md) — почему QEMU, а не только native ARM;
 - [ADR-0002](adr/0002-why-jazzy-for-nano.md) — почему Jazzy на Nano;
-- [ADR-0003](adr/0003-why-kitware-apt.md) — почему CMake из Kitware APT.
+- [ADR-0003](adr/0003-why-kitware-apt.md) — почему CMake из бинарного архива.
 
 ---
 
@@ -209,9 +229,10 @@ NVIDIA (`nvcr.io/nvidia/l4t-jetpack`), Kitware APT для CMake 3.28+.
 
 | Пункт ТЗ | Отклонение | Обоснование |
 |---|---|---|
+| 3.1: «FAST-LIO2 **или** FAST-LIVO2» | Используется FAST-LIO2 | FAST-LIVO2 — ROS1 catkin-пакет, несовместимый с ROS2 ament (`find_package(catkin REQUIRED)`). ТЗ допускает любой из двух |
 | 3.2: «ROS2 Humble» для всех платформ | Nano использует Jazzy | JetPack 7 требует Ubuntu 24.04; Humble для 24.04 не поддерживается upstream |
 | 3.2: `l4t-jetpack:r36.5.0` | Используется `r36.4.0` | Образ `r36.5.0` отсутствует в NGC на момент разработки |
-| 3.5: «3 платформы × 2 типа сборки» | Реализовано 5 cross + 2 native (по флагу) | Native-ARM требует физического Jetson-раннера; архитектурно реализовано, включается флагом |
+| 3.5: «3 платформы × 2 типа сборки» | 3 cross + 2 native (по флагу) | Native-ARM требует физического Jetson-раннера; архитектурно реализовано, включается флагом |
 | 3.5: native AGX и native Nano | Опциональны по ТЗ | Требуют self-hosted runner'а; инструкция приложена |
 
 ---
@@ -223,7 +244,11 @@ NVIDIA (`nvcr.io/nvidia/l4t-jetpack`), Kitware APT для CMake 3.28+.
 - Образы воспроизводимы: базовые пинятся по digest, `packages.yaml` —
   единственный источник конфигурации пакетов.
 - Добавление нового пакета — одна запись в `config/packages.yaml`.
-- Кеширование сокращает повторные прогоны с ~5 часов до ~1.5–2 часов.
+- Кеширование сокращает повторные прогоны с ~3 часов до ~1.5–2 часов.
+- Тестовый пакет FAST-LIO2 (`ruiqichao/FAST_LIO2_GPU`) собирается на всех
+  трёх платформах с поддержкой CUDA. FAST-LIVO2 не используется, так как
+  опубликован только под ROS1 catkin — вопрос зафиксирован в разделе
+  «Отклонения», инфраструктура для его сборки подготовлена в Dockerfile.
 - Ограничения: QEMU-сборка ARM медленная; для production рекомендуется
   self-hosted Jetson-раннер (инструкция приложена).
 
