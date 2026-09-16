@@ -252,4 +252,16 @@ NVIDIA (`nvcr.io/nvidia/l4t-jetpack`), CMake 4.4.3 из официального
 - Ограничения: QEMU-сборка ARM медленная; для production рекомендуется
   self-hosted Jetson-раннер (инструкция приложена).
 
+  ## 8. Скриншоты
+![матрица](https://github.com/MindMaze74/ros2-cuda-crossbuild/blob/main/img/2.png)
+![результат сборки х86](https://github.com/MindMaze74/ros2-cuda-crossbuild/blob/main/img/3.png)
+![результат сборки agx](https://github.com/MindMaze74/ros2-cuda-crossbuild/blob/main/img/4.png)
+![результат сборки nano](https://github.com/MindMaze74/ros2-cuda-crossbuild/blob/main/img/5.png)
+![результат тестов собранных образов](https://github.com/MindMaze74/ros2-cuda-crossbuild/blob/main/img/6.png)
+![артефакты](https://github.com/MindMaze74/ros2-cuda-crossbuild/blob/main/img/7.png)
+![пакеты](https://github.com/MindMaze74/ros2-cuda-crossbuild/blob/main/img/8.png)
+![6 пакетов](https://github.com/MindMaze74/ros2-cuda-crossbuild/blob/main/img/9.png)
+![отображение версий и док к нему](https://github.com/MindMaze74/ros2-cuda-crossbuild/blob/main/img/10.png)
+![лог из теста образа](https://github.com/MindMaze74/ros2-cuda-crossbuild/blob/main/img/11.png)
+  
 ---
