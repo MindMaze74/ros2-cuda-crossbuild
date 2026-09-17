@@ -7,13 +7,50 @@ Jetson Orin Nano.
 ## Быстрый старт
 
 ```bash
+# 1. Скачиваем базовый образ для x86
 docker pull ghcr.io/mindmaze74/ros2-cuda-crossbuild/ros2-base-x86:latest
+
+# 2. Проверяем наличие CUDA (должно вывести версию nvcc)
 docker run --rm -it ghcr.io/mindmaze74/ros2-cuda-crossbuild/ros2-base-x86:latest nvcc --version
+
+# 3. Скачиваем готовый пакет FAST-LIO2 (кросс-сборка под AGX)
+docker pull ghcr.io/mindmaze74/ros2-cuda-crossbuild/ros2-package-fastlio2-agx-cross
 ```
 
 <!-- PACKAGES_TABLE:START -->
 <!-- Секция сгенерирована автоматически из config/packages.yaml. -->
 <!-- Не редактируйте вручную — правьте packages.yaml. -->
+
+## Собранные образы (GHCR)
+
+| Тип образа | Платформа | Статус | Тег в реестре |
+| :--- | :--- | :--- | :--- |
+| Базовый | x86_64 | Собрано и опубликовано | `ros2-base-x86:latest` |
+| Базовый | Jetson AGX | Собрано и опубликовано | `ros2-base-agx:latest` |
+| Базовый | Jetson Nano | Собрано и опубликовано | `ros2-base-nano:latest` |
+| Пакет (FAST-LIO2) | x86_64 | Собрано и опубликовано | `ros2-package-fastlio2:latest` |
+| Пакет (FAST-LIO2) | Jetson AGX (Cross) | Собрано и опубликовано | `ros2-package-fastlio2-agx-cross` |
+| Пакет (FAST-LIO2) | Jetson Nano (Cross) | Собрано и опубликовано | `ros2-package-fastlio2-nano-cross` |
+| Пакет (FAST-LIO2) | Jetson AGX (Native) | Подготовлено | Требуется self-hosted раннер |
+
+## Статус артефактов (GHCR)
+
+Все собранные образы публикуются в реестре `ghcr.io`.
+
+### Базовые образы
+- `ros2-base-x86:latest` — для x86_64.
+- `ros2-base-agx:latest` — для Jetson AGX Orin.
+- `ros2-base-nano:latest` — для Jetson Orin Nano.
+
+### Образы с пакетами (FAST-LIO2)
+- `ros2-package-fastlio2:latest` — сборка под x86.
+- `ros2-package-fastlio2-agx-cross` — кросс-сборка под AGX (QEMU).
+- `ros2-package-fastlio2-nano-cross` — кросс-сборка под Nano (QEMU).
+
+### Кэш сборки
+- `buildcache` — кэш Docker Buildx для ускорения повторных сборок.
+
+> **Примечание по нативной сборке:** Образы для нативной сборки (Native ARM) не публикуются в реестр по умолчанию, так как требуют наличия self-hosted раннера на базе Jetson. Инструкция по их сборке доступна в [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
 ## Поддерживаемые пакеты
 
@@ -29,6 +66,12 @@ docker run --rm -it ghcr.io/mindmaze74/ros2-cuda-crossbuild/ros2-base-x86:latest
 
 <!-- PACKAGES_TABLE:END -->
 
+## Способы сборки ARM64
+
+1. **Кросс через QEMU** — на `ubuntu-latest` (по умолчанию).
+2. **Нативно на Jetson** — при подключённом self-hosted runner'е,
+   через флаг `build_native_arm`. Инструкция — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), раздел 3.
+   
 ## Документация
 
 - [docs/architecture.md](docs/architecture.md) — схема пайплайна (Mermaid)
@@ -36,7 +79,7 @@ docker run --rm -it ghcr.io/mindmaze74/ros2-cuda-crossbuild/ros2-base-x86:latest
 - [docs/REPORT.md](docs/REPORT.md) — итоговый отчёт по практике
 - [docs/adr/](docs/adr/) — принятые архитектурные решения
 
-## Платформы
+##  Платформенные детали
 
 | Платформа | База | ROS2 | CUDA arch |
 |---|---|---|---|
@@ -44,11 +87,8 @@ docker run --rm -it ghcr.io/mindmaze74/ros2-cuda-crossbuild/ros2-base-x86:latest
 | AGX Orin | `nvcr.io/nvidia/l4t-jetpack:r36.4.0` | Humble | 87 |
 | Orin Nano | `nvidia/cuda:12.6.3-devel-ubuntu24.04` | Jazzy | 87 |
 
-## Способы сборки ARM64
 
-1. **Кросс через QEMU** — на `ubuntu-latest` (по умолчанию).
-2. **Нативно на Jetson** — при подключённом self-hosted runner'е,
-   через флаг `build_native_arm`. Инструкция — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), раздел 3.
+   
 
 ## Лицензия
 
