@@ -18,3 +18,4 @@ trivy-results.sarif
 
 yq temp
 *.tmp
+*.save

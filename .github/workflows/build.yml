@@ -1,12 +1,17 @@
 # .github/workflows/build.yml
 #
-# Сборка базовых образов и ROS2-пакетов с CUDA для трёх платформ.
+# Сборка базовых образов и ROS2-пакетов с CUDA.
 # Конфигурация пакетов — config/packages.yaml.
+#
+# Поддерживается два способа сборки ARM64:
+#   1. Кросс-сборка через QEMU на ubuntu-latest (по умолчанию).
+#   2. Нативная сборка на self-hosted runner'е (Jetson AGX / Nano).
+#      Включается флагом build_native_arm при ручном запуске.
 #
 # Ключевые особенности:
 #   - digest базовых образов вместо :latest — воспроизводимость
 #   - per-job permissions (least privilege)
-#   - timeout-minutes, concurrency — защита от зависаний и наложения прогонов
+#   - timeout-minutes, concurrency — защита от зависаний и наложения
 #   - двухуровневый кеш: actions/cache (local) + registry
 #   - smoke-тест компиляции CUDA + ldd-проверка зависимостей
 #   - ros_distro резолвится по платформе (map в packages.yaml)
@@ -34,19 +39,21 @@ on:
         description: 'Rebuild package images'
         type: boolean
         default: true
+      build_native_arm:
+        description: 'Build natively on self-hosted Jetson runners (requires runners)'
+        type: boolean
+        default: false
       package:
         description: 'Package'
         type: choice
         options:
           - all
           - fastlio2
-          - fastlivo2
         default: all
       platform:
         description: 'Platform: x86 | agx | nano (empty = all)'
         default: ''
 
-# Отменяем предыдущий прогон при новом пуше в ту же ветку.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -90,7 +97,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ARM-сборки через QEMU жрут диск. Освобождаем место заранее.
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
@@ -115,7 +121,6 @@ jobs:
         run: |
           echo "NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
-      # Локальный кеш BuildKit — ускоряет повторные прогоны.
       - name: Cache BuildKit
         uses: actions/cache@v4
         with:
@@ -144,14 +149,13 @@ jobs:
             type=local,dest=/tmp/.buildx-cache-new,mode=max
             type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-base-${{ matrix.platform }}:buildcache,mode=max
 
-      # actions/cache не перезаписывает существующий ключ — ротация через rename.
       - name: Rotate BuildKit cache
         run: |
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
   # ---------------------------------------------------------------------------
-  # Setup: матрица пакетов из config/packages.yaml
+  # Setup: матрица пакетов
   # ---------------------------------------------------------------------------
   setup:
     runs-on: ubuntu-latest
@@ -163,9 +167,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # mikefarah/yq@v4 — это Docker container action: он запускает yq внутри
-      # контейнера и завершается, НЕ добавляя бинарник в PATH job'а.
-      # Поэтому ставим yq явно.
       - name: Install yq
         run: |
           sudo wget -qO /usr/local/bin/yq \
@@ -182,26 +183,32 @@ jobs:
           PACKAGES=$(yq -o=json -I=0 '.packages' config/packages.yaml)
 
           SELECTED_PKG="${{ github.event.inputs.package }}"
-          # 'all' (или пусто) — все пакеты, иначе фильтр по имени.
           if [ -n "$SELECTED_PKG" ] && [ "$SELECTED_PKG" != "all" ]; then
             PACKAGES=$(echo "$PACKAGES" | jq --arg p "$SELECTED_PKG" '[.[] | select(.name == $p)]')
           fi
 
           PLATFORMS='[
-            {"platform":"x86","target_platform":"linux/amd64","runner":"ubuntu-latest"},
-            {"platform":"agx","target_platform":"linux/arm64","runner":"ubuntu-latest"},
-            {"platform":"nano","target_platform":"linux/arm64","runner":"ubuntu-latest"}
+            {"platform":"x86","target_platform":"linux/amd64","runner":"ubuntu-latest","build_type":"cross"},
+            {"platform":"agx","target_platform":"linux/arm64","runner":"ubuntu-latest","build_type":"cross"},
+            {"platform":"nano","target_platform":"linux/arm64","runner":"ubuntu-latest","build_type":"cross"}
           ]'
+
           SELECTED_PLAT="${{ github.event.inputs.platform }}"
           if [ -n "$SELECTED_PLAT" ]; then
             PLATFORMS=$(echo "$PLATFORMS" | jq --arg p "$SELECTED_PLAT" '[.[] | select(.platform == $p)]')
           fi
 
-          # Собираем декартово произведение пакетов и платформ, с двумя фильтрами:
-          #   1. Если у пакета задано поле platforms — пропускаем комбинации
-          #      с платформами, которых там нет.
-          #   2. ros_distro может быть строкой (на все платформы) или map'ом
-          #      { x86, agx, nano } — во втором случае берём значение по платформе.
+          if [ "${{ github.event.inputs.build_native_arm }}" = "true" ]; then
+            NATIVE_PLATFORMS='[
+              {"platform":"agx","target_platform":"linux/arm64","runner":["self-hosted","arm64","jetson-agx"],"build_type":"native"},
+              {"platform":"nano","target_platform":"linux/arm64","runner":["self-hosted","arm64","jetson-nano"],"build_type":"native"}
+            ]'
+            if [ -n "$SELECTED_PLAT" ]; then
+              NATIVE_PLATFORMS=$(echo "$NATIVE_PLATFORMS" | jq --arg p "$SELECTED_PLAT" '[.[] | select(.platform == $p)]')
+            fi
+            PLATFORMS=$(echo "$PLATFORMS" | jq --argjson n "$NATIVE_PLATFORMS" '. + $n')
+          fi
+
           MATRIX=$(jq -nc \
             --argjson pkgs "$PACKAGES" \
             --argjson plats "$PLATFORMS" \
@@ -215,6 +222,7 @@ jobs:
                 platform: $p.platform,
                 target_platform: $p.target_platform,
                 runner: $p.runner,
+                build_type: $p.build_type,
                 package: $pkg.name,
                 repo: $pkg.repo,
                 branch: $pkg.branch,
@@ -233,10 +241,9 @@ jobs:
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
           echo "$MATRIX" | jq .
 
-          # Краткая сводка в логе, чтобы видеть, что собралось в матрицу.
           echo ""
           echo "Matrix size: $(echo "$MATRIX" | jq '.include | length')"
-          echo "$MATRIX" | jq -r '.include[] | "  - \(.package) × \(.platform) (ros=\(.ros_distro))"'
+          echo "$MATRIX" | jq -r '.include[] | "  - \(.package) × \(.platform) [\(.build_type)] (ros=\(.ros_distro))"'
 
   # ---------------------------------------------------------------------------
   # Пакеты
@@ -249,7 +256,7 @@ jobs:
       (github.event_name == 'push' ||
        (github.event_name == 'workflow_dispatch' && inputs.build_packages == true))
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: ${{ matrix.build_type == 'native' && 15 || 120 }}
     permissions:
       contents: read
       packages: write
@@ -268,7 +275,7 @@ jobs:
           docker builder prune -af || true
 
       - name: Set up QEMU
-        if: matrix.target_platform == 'linux/arm64'
+        if: matrix.target_platform == 'linux/arm64' && matrix.build_type == 'cross'
         uses: docker/setup-qemu-action@v3
 
       - uses: docker/setup-buildx-action@v3
@@ -289,14 +296,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/.buildx-cache
-          key: buildx-pkg-${{ matrix.package }}-${{ matrix.platform }}-${{ hashFiles('docker/Dockerfile.package') }}
-          restore-keys: buildx-pkg-${{ matrix.package }}-${{ matrix.platform }}-
+          key: buildx-pkg-${{ matrix.package }}-${{ matrix.platform }}-${{ matrix.build_type }}-${{ hashFiles('docker/Dockerfile.package') }}
+          restore-keys: buildx-pkg-${{ matrix.package }}-${{ matrix.platform }}-${{ matrix.build_type }}-
 
-      # Резолвим digest базового образа в момент сборки пакета.
-      # Это даёт воспроизводимость: даже если между job'ами кто-то
-      # перезапишет :latest, мы используем точную версию, собранную в build-base.
-      # Если digest получить не удалось (например, база не собиралась в этом прогоне) —
-      # падаем обратно на :latest.
       - name: Resolve base image reference
         id: base_ref
         run: |
@@ -327,7 +329,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-          tags: ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}
+          tags: ${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}${{ matrix.build_type == 'native' && '-native' || '' }}
           build-args: |
             BASE_IMAGE=${{ steps.base_ref.outputs.ref }}
             CUDA_ARCHITECTURES=${{ matrix.cuda_arch }}
@@ -338,10 +340,10 @@ jobs:
             CMAKE_ARGS=${{ matrix.cmake_args }}
           cache-from: |
             type=local,src=/tmp/.buildx-cache
-            type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache
+            type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}-${{ matrix.build_type }}:buildcache
           cache-to: |
             type=local,dest=/tmp/.buildx-cache-new,mode=max
-            type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}:buildcache,mode=max
+            type=registry,ref=${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}-${{ matrix.platform }}-${{ matrix.build_type }}:buildcache,mode=max
 
       - name: Rotate BuildKit cache
         run: |
@@ -349,25 +351,25 @@ jobs:
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
   # ---------------------------------------------------------------------------
-  # Тесты: nvcc, smoke-компиляция, ROS2, ldd
+  # Тесты
   # ---------------------------------------------------------------------------
   test-images:
     needs: [build-packages, setup]
     if: always() && needs.build-packages.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.build_type == 'native' && matrix.runner || 'ubuntu-latest' }}
     timeout-minutes: 60
     permissions:
       contents: read
       packages: read
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 3
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up QEMU
-        if: matrix.target_platform == 'linux/arm64'
+        if: matrix.target_platform == 'linux/arm64' && matrix.build_type == 'cross'
         uses: docker/setup-qemu-action@v3
 
       - name: Log in to GHCR
@@ -385,22 +387,20 @@ jobs:
       - name: Pull and test image
         run: |
           set -euo pipefail
-          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}"
+          TAG_SUFFIX="${{ matrix.build_type == 'native' && '-native' || '' }}"
+          IMAGE="${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}${TAG_SUFFIX}"
           ROS_DISTRO="${{ matrix.ros_distro }}"
 
           docker pull "$IMAGE"
 
           PLATFORM_FLAG=""
-          if [ "${{ matrix.target_platform }}" = "linux/arm64" ]; then
+          if [ "${{ matrix.target_platform }}" = "linux/arm64" ] && [ "${{ matrix.build_type }}" = "cross" ]; then
             PLATFORM_FLAG="--platform linux/arm64"
           fi
 
           echo "=== 1. nvcc version ==="
           docker run --rm $PLATFORM_FLAG "$IMAGE" nvcc --version
 
-          # Smoke-тест: компилируем и запускаем простую CUDA-программу.
-          # Без GPU cudaGetDeviceCount вернёт ошибку/0 — это нормально для CI.
-          # Главное — что компиляция и линковка с libcudart проходят.
           echo "=== 2. CUDA compile smoke test ==="
           docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c '
             cat > /tmp/smoke.cu <<EOF
@@ -426,7 +426,7 @@ jobs:
           echo "=== 4. Build artifacts ==="
           docker run --rm $PLATFORM_FLAG "$IMAGE" ls -la /opt/ros_ws/install/
 
-          echo "=== 5. ldd check — ищем потерянные зависимости ==="
+          echo "=== 5. ldd check ==="
           docker run --rm $PLATFORM_FLAG "$IMAGE" bash -c "
             source /opt/ros/${ROS_DISTRO}/setup.bash
             source /opt/ros_ws/install/setup.bash
@@ -462,10 +462,11 @@ jobs:
         if: always()
         run: |
           {
-            echo "## Test summary: ${{ matrix.package }} / ${{ matrix.platform }}"
+            echo "## Test summary: ${{ matrix.package }} / ${{ matrix.platform }} / ${{ matrix.build_type }}"
             echo ""
-            echo "- Image: \`${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}\`"
+            echo "- Image: \`${{ env.REGISTRY }}/${{ steps.repo.outputs.NAME }}/ros2-package-${{ matrix.package }}:${{ matrix.platform }}${{ matrix.build_type == 'native' && '-native' || '' }}\`"
             echo "- ROS distro: \`${{ matrix.ros_distro }}\`"
             echo "- CUDA arch: \`${{ matrix.cuda_arch }}\`"
+            echo "- Build type: \`${{ matrix.build_type }}\`"
             echo "- Status: ${{ job.status }}"
           } >> $GITHUB_STEP_SUMMARY
