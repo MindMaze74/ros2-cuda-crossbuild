@@ -21,45 +21,13 @@ docker pull ghcr.io/mindmaze74/ros2-cuda-crossbuild/ros2-package-fastlio2-agx-cr
 <!-- Секция сгенерирована автоматически из config/packages.yaml. -->
 <!-- Не редактируйте вручную — правьте packages.yaml. -->
 
-## Собранные образы (GHCR)
-
-| Тип образа | Платформа | Статус | Тег в реестре |
-| :--- | :--- | :--- | :--- |
-| Базовый | x86_64 | Собрано и опубликовано | `ros2-base-x86:latest` |
-| Базовый | Jetson AGX | Собрано и опубликовано | `ros2-base-agx:latest` |
-| Базовый | Jetson Nano | Собрано и опубликовано | `ros2-base-nano:latest` |
-| Пакет (FAST-LIO2) | x86_64 | Собрано и опубликовано | `ros2-package-fastlio2:latest` |
-| Пакет (FAST-LIO2) | Jetson AGX (Cross) | Собрано и опубликовано | `ros2-package-fastlio2-agx-cross` |
-| Пакет (FAST-LIO2) | Jetson Nano (Cross) | Собрано и опубликовано | `ros2-package-fastlio2-nano-cross` |
-| Пакет (FAST-LIO2) | Jetson AGX (Native) | Подготовлено | Требуется self-hosted раннер |
-
-## Статус артефактов (GHCR)
-
-Все собранные образы публикуются в реестре `ghcr.io`.
-
-### Базовые образы
-- `ros2-base-x86:latest` — для x86_64.
-- `ros2-base-agx:latest` — для Jetson AGX Orin.
-- `ros2-base-nano:latest` — для Jetson Orin Nano.
-
-### Образы с пакетами (FAST-LIO2)
-- `ros2-package-fastlio2:latest` — сборка под x86.
-- `ros2-package-fastlio2-agx-cross` — кросс-сборка под AGX (QEMU).
-- `ros2-package-fastlio2-nano-cross` — кросс-сборка под Nano (QEMU).
-
-### Кэш сборки
-- `buildcache` — кэш Docker Buildx для ускорения повторных сборок.
-
-> **Примечание по нативной сборке:** Образы для нативной сборки (Native ARM) не публикуются в реестр по умолчанию, так как требуют наличия self-hosted раннера на базе Jetson. Инструкция по их сборке доступна в [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
-
 ## Поддерживаемые пакеты
 
-Всего пакетов: **2**. Матрица: пакет × 3 платформы (x86 / agx / nano).
+Всего пакетов: **1**. Матрица: пакет × 3 платформы (x86 / agx / nano).
 
 | Пакет | Репозиторий | Ветка | ROS2 | x86 | agx | nano |
 |---|---|---|---|---|---|---|
 | `fastlio2` | [ruiqichao/FAST_LIO2_GPU](https://github.com/ruiqichao/FAST_LIO2_GPU.git) | `main` | `humble/humble/jazzy` | `86` | `87` | `87` |
-| `fastlivo2` | [hku-mars/FAST-LIVO2](https://github.com/hku-mars/FAST-LIVO2.git) | `main` | `humble/humble/jazzy` | `86` | `87` | `87` |
 
 Добавление нового пакета — одна запись в [`config/packages.yaml`](config/packages.yaml).
 После пуша workflow `README Sync` автоматически обновит эту таблицу.
